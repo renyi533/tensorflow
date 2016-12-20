@@ -23,7 +23,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/kernels/fill_functor.h"
-
+#include "stdio.h"
 #if GOOGLE_CUDA
 #include "cuda/include/cuda.h"
 #include "tensorflow/core/platform/stream_executor.h"
@@ -127,6 +127,7 @@ struct LaunchMatMulCPU {
       Tensor* out) {
     // An explicit vector-matrix multiply is much better optimized than an
     // implicit one and this is a bottleneck during non-batched inference.
+    //printf("use old matmul\n");
     bool was_vector = ExplicitVectorMatrixOptimization<T>(a, b, dim_pair, out);
     if (!was_vector) {
       functor::MatMulFunctor<CPUDevice, T>()(ctx->eigen_device<CPUDevice>(),
@@ -138,6 +139,42 @@ struct LaunchMatMulCPU {
 
 template <typename T, bool USE_CUBLAS>
 struct LaunchMatMul<CPUDevice, T, USE_CUBLAS> : public LaunchMatMulCPU<T> {};
+
+
+template <bool USE_CUBLAS>
+struct LaunchMatMul<CPUDevice, float, USE_CUBLAS> {
+  static void launch(
+      OpKernelContext* ctx, OpKernel* kernel, const Tensor& a, const Tensor& b,
+      const Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1>& dim_pair,
+      Tensor* out) {
+    // An explicit vector-matrix multiply is much better optimized than an
+    // implicit one and this is a bottleneck during non-batched inference.
+    //printf("use new matmul\n");
+    bool was_vector = ExplicitVectorMatrixOptimization<float>(a, b, dim_pair, out);
+    if (!was_vector) {
+      /*functor::MatMulFunctor<CPUDevice, float>()(ctx->eigen_device<CPUDevice>(),
+                                             out->matrix<float>(), a.matrix<float>(),
+                                             b.matrix<float>(), dim_pair);*/
+        //printf("new not vector\n");
+        CBLAS_TRANSPOSE trans[] = {
+            CblasNoTrans,
+            CblasTrans};                                             
+        const uint64 m = a.dim_size(1 - dim_pair[0].first);
+        const uint64 k = a.dim_size(dim_pair[0].first);
+        const uint64 n = b.dim_size(1 - dim_pair[0].second);  
+        bool transpose_a = dim_pair[0].first == 0;
+        bool transpose_b = dim_pair[0].second == 1;   
+        auto blas_transpose_a = trans[transpose_a];
+        auto blas_transpose_b = trans[transpose_b];
+
+        auto a_ptr = a.flat<float>().data();
+        auto b_ptr = b.flat<float>().data();
+        auto c_ptr = out->flat<float>().data();  
+
+        cblas_sgemm (CblasRowMajor, blas_transpose_a, blas_transpose_b, m, n, k, 1.0f, a_ptr, transpose_a? m : k, b_ptr, transpose_b? k : n , 0.0f, c_ptr, n);    
+    }
+  }
+};
 
 #if GOOGLE_CUDA
 

@@ -28,7 +28,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import math_ops
-
+import tensorflow as tf
 
 def _safe_shape_div(x, y):
   """Divides `x / y` assuming `x, y >= 0`, treating `0 / 0 = 0`."""
@@ -742,6 +742,12 @@ def _MatMulGrad(op, grad):
                             transpose_b=True))
 
 
+@ops.RegisterGradient("BlasDotProduct")
+def _BlasDotProductGrad(op, grad):
+  return (array_ops.reshape(tf.mul(op.inputs[1], grad), [-1,]),
+        array_ops.reshape(tf.mul(op.inputs[0], grad), [-1,]))
+
+                            
 @ops.RegisterGradient("SparseMatMul")
 def _SparseMatMulGrad(op, grad):
   """Gradient for SparseMatMul."""

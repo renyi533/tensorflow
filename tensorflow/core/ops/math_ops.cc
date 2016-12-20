@@ -1096,6 +1096,22 @@ transpose_a: If true, "a" is transposed before multiplication.
 transpose_b: If true, "b" is transposed before multiplication.
 )doc");
 
+REGISTER_OP("BlasDotProduct")
+    .Input("a: T")
+    .Input("b: T")
+    .Output("product: T")
+    .Attr("T: {float, double}")
+    .SetShapeFn([](InferenceContext* c) {
+        std::vector<DimensionHandle> dims;
+        dims.emplace_back(c->MakeDim(1));
+        c->set_output(0, c->MakeShape(dims));  
+        return Status::OK();
+    })
+    .Doc(R"doc(
+Doc product of two vectors
+)doc");
+
+
 REGISTER_OP("SparseMatMul")
     .Input("a: Ta")
     .Input("b: Tb")

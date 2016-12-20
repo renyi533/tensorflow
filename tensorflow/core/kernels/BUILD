@@ -1397,6 +1397,7 @@ MATH_DEPS = [
     "//tensorflow/core:math_grad",
     "//tensorflow/core:math_ops_op_lib",
     "//third_party/eigen3",
+    "//third_party/open_blas",
 ]
 
 tf_kernel_libraries(
@@ -1420,6 +1421,7 @@ tf_kernel_libraries(
         "cwise_op",
         "fft_ops",
         "matmul_op",
+        "dotproduct_op",
         "reduction_ops",
         "segment_reduction_ops",
         "scan_ops",
@@ -2370,6 +2372,8 @@ filegroup(
         "immutable_constant_op.h",
         "matmul_op.cc",
         "matmul_op.h",
+        "dotproduct_op.cc",
+        "dotproduct_op.h",        
         "no_op.cc",
         "no_op.h",
         "ops_util.h",
