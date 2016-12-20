@@ -120,15 +120,15 @@ if (tensorflow_BUILD_PYTHON_TESTS)
     "${tensorflow_source_dir}/tensorflow/python/saved_model/*_test.py"
     "${tensorflow_source_dir}/tensorflow/python/training/*_test.py"
     "${tensorflow_source_dir}/tensorflow/tensorboard/*_test.py"
-    "${tensorflow_source_dir}/tensorflow/models/*_test.py"
   )
 
   # exclude the onces we don't want
   set(tf_test_src_py_exclude
     # generally not working
     "${tensorflow_source_dir}/tensorflow/python/kernel_tests/__init__.py"
-	"${tensorflow_source_dir}/tensorflow/python/kernel_tests/benchmark_test.py"
+    "${tensorflow_source_dir}/tensorflow/python/kernel_tests/benchmark_test.py"
     "${tensorflow_source_dir}/tensorflow/python/kernel_tests/resource_variable_ops_test.py"
+    "${tensorflow_source_dir}/tensorflow/python/saved_model/saved_model_test.py"
   )
   if (WIN32)
     set(tf_test_src_py_exclude
