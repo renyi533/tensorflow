@@ -82,7 +82,7 @@ class Variable(object):
   ```
 
   The most common initialization pattern is to use the convenience function
-  `global_variable_initializers()` to add an Op to the graph that initializes
+  `global_variables_initializer()` to add an Op to the graph that initializes
   all the variables. You then run that Op after launching the graph.
 
   ```python
@@ -492,7 +492,7 @@ class Variable(object):
 
     ```python
     v = tf.Variable([1, 2])
-    init = tf.global_variable_initializers()
+    init = tf.global_variables_initializer()
 
     with tf.Session() as sess:
         sess.run(init)
@@ -1073,7 +1073,7 @@ def global_variables():
   return ops.get_collection(ops.GraphKeys.GLOBAL_VARIABLES)
 
 
-@deprecated("2016-03-02", "Please use tf.global_variables instead.")
+@deprecated("2017-03-02", "Please use tf.global_variables instead.")
 def all_variables():
   """See `tf.global_variables`."""
   return global_variables()
