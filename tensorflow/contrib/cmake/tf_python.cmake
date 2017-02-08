@@ -372,6 +372,9 @@ add_python_module("tensorflow/contrib/slim/python/slim/nets")
 add_python_module("tensorflow/contrib/solvers")
 add_python_module("tensorflow/contrib/solvers/python")
 add_python_module("tensorflow/contrib/solvers/python/ops")
+add_python_module("tensorflow/contrib/sparsemax")
+add_python_module("tensorflow/contrib/sparsemax/python")
+add_python_module("tensorflow/contrib/sparsemax/python/ops")
 add_python_module("tensorflow/contrib/specs")
 add_python_module("tensorflow/contrib/specs/python")
 add_python_module("tensorflow/contrib/stat_summarizer")
@@ -582,6 +585,7 @@ add_library(pywrap_tensorflow SHARED
     $<TARGET_OBJECTS:tf_core_framework>
     $<TARGET_OBJECTS:tf_core_ops>
     $<TARGET_OBJECTS:tf_core_direct_session>
+    $<TARGET_OBJECTS:tf_tools_transform_graph_lib>
     $<$<BOOL:${tensorflow_ENABLE_GRPC_SUPPORT}>:$<TARGET_OBJECTS:tf_core_distributed_runtime>>
     $<TARGET_OBJECTS:tf_core_kernels>
     $<$<BOOL:${tensorflow_ENABLE_GPU}>:$<TARGET_OBJECTS:tf_core_kernels_cpu_only>>

@@ -1511,6 +1511,7 @@ REGISTER_OP("PreventGradient")
     .Input("input: T")
     .Output("output: T")
     .Attr("T: type")
+    .Attr("message: string = ''")
     .SetShapeFn(shape_inference::UnchangedShape)
     .Doc(R"Doc(
 An identity op that triggers an error if a gradient is requested.
@@ -1522,6 +1523,11 @@ will return an error when trying to lookup the gradient of this op,
 because no gradient must ever be registered for this function.  This
 op exists to prevent subtle bugs from silently returning unimplemented
 gradients in some corner cases.
+
+input: any tensor.
+output: the same input tensor.
+message: Will be printed in the error when anyone tries to differentiate
+this operation.
 )Doc");
 
 // --------------------------------------------------------------------------
@@ -3322,7 +3328,7 @@ x = [[[[1],   [2],  [3],  [4]],
 The output tensor has shape `[4, 2, 2, 1]` and value:
 
 ```prettyprint
-x = [[[[1], [3]], [[5], [7]]],
+x = [[[[1], [3]], [[9], [11]]],
      [[[2], [4]], [[10], [12]]],
      [[[5], [7]], [[13], [15]]],
      [[[6], [8]], [[14], [16]]]]
@@ -3449,7 +3455,7 @@ x = [[[[1],   [2],  [3],  [4]],
 The output tensor has shape `[4, 2, 2, 1]` and value:
 
 ```prettyprint
-x = [[[[1], [3]], [[5], [7]]],
+x = [[[[1], [3]], [[9], [11]]],
      [[[2], [4]], [[10], [12]]],
      [[[5], [7]], [[13], [15]]],
      [[[6], [8]], [[14], [16]]]]
@@ -3580,7 +3586,7 @@ x = [[[[1, 2, 3], [4, 5, 6]],
     `crops = [[0, 0], [0, 0]]`:
 
 ```prettyprint
-x = [[[[1], [3]], [[5], [7]]],
+x = [[[[1], [3]], [[9], [11]]],
      [[[2], [4]], [[10], [12]]],
      [[[5], [7]], [[13], [15]]],
      [[[6], [8]], [[14], [16]]]]
@@ -3698,7 +3704,7 @@ x = [[[[1, 2, 3], [4, 5, 6]],
 (3) For the following input of shape `[4, 2, 2, 1]` and block_size of 2:
 
 ```prettyprint
-x = [[[[1], [3]], [[5], [7]]],
+x = [[[[1], [3]], [[9], [11]]],
      [[[2], [4]], [[10], [12]]],
      [[[5], [7]], [[13], [15]]],
      [[[6], [8]], [[14], [16]]]]

@@ -1512,7 +1512,7 @@ precise description.
     The output tensor has shape `[4, 2, 2, 1]` and value:
 
     ```prettyprint
-    x = [[[[1], [3]], [[5], [7]]],
+    x = [[[[1], [3]], [[9], [11]]],
          [[[2], [4]], [[10], [12]]],
          [[[5], [7]], [[13], [15]]],
          [[[6], [8]], [[14], [16]]]]
@@ -1627,7 +1627,7 @@ block size.
     The output tensor has shape `[4, 2, 2, 1]` and value:
 
     ```prettyprint
-    x = [[[[1], [3]], [[5], [7]]],
+    x = [[[[1], [3]], [[9], [11]]],
          [[[2], [4]], [[10], [12]]],
          [[[5], [7]], [[13], [15]]],
          [[[6], [8]], [[14], [16]]]]
@@ -1796,7 +1796,7 @@ reverse of SpaceToBatch.  See below for a precise description.
         `crops = [[0, 0], [0, 0]]`:
 
     ```prettyprint
-    x = [[[[1], [3]], [[5], [7]]],
+    x = [[[[1], [3]], [[9], [11]]],
          [[[2], [4]], [[10], [12]]],
          [[[5], [7]], [[13], [15]]],
          [[[6], [8]], [[14], [16]]]]
@@ -1908,7 +1908,7 @@ followed by cropping along the `height` and `width` dimensions.
   (3) For the following input of shape `[4, 2, 2, 1]` and block_size of 2:
 
   ```prettyprint
-  x = [[[[1], [3]], [[5], [7]]],
+  x = [[[[1], [3]], [[9], [11]]],
        [[[2], [4]], [[10], [12]]],
        [[[5], [7]], [[13], [15]]],
        [[[6], [8]], [[14], [16]]]]
@@ -3138,5 +3138,39 @@ Compute gradients for a FakeQuantWithMinMaxVarsPerChannel operation.
 ### `tf.concat_v2(values, axis, name='concat_v2')` {#concat_v2}
 
 
+
+
+- - -
+
+### `tf.contrib.graph_editor.copy(sgv, dst_graph=None, dst_scope='', src_scope='', reuse_dst_scope=False)` {#copy}
+
+Copy a subgraph.
+
+##### Args:
+
+
+*  <b>`sgv`</b>: the source subgraph-view. This argument is converted to a subgraph
+    using the same rules than the function subgraph.make_view.
+*  <b>`dst_graph`</b>: the destination graph.
+*  <b>`dst_scope`</b>: the destination scope.
+*  <b>`src_scope`</b>: the source scope.
+*  <b>`reuse_dst_scope`</b>: if True the dst_scope is re-used if it already exists.
+    Otherwise, the scope is given a unique name based on the one given
+    by appending an underscore followed by a digit (default).
+
+##### Returns:
+
+  A tuple `(sgv, info)` where:
+    `sgv` is the transformed subgraph view;
+    `info` is an instance of TransformerInfo containing
+    information about the transform, including mapping between
+    original and transformed tensors and operations.
+
+##### Raises:
+
+
+*  <b>`TypeError`</b>: if `dst_graph` is not a `tf.Graph`.
+*  <b>`StandardError`</b>: if sgv cannot be converted to a SubGraphView using
+    the same rules than the function subgraph.make_view.
 
 

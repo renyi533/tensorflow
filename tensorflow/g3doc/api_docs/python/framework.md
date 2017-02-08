@@ -378,7 +378,8 @@ names match one of the following regular expressions:
 ##### Raises:
 
 
-*  <b>`ValueError`</b>: If `name` is not a valid scope name. The rules are the
+*  <b>`ValueError`</b>: If `name` is not a valid scope name, according to the rules
+    above.
 
 
 
@@ -3769,7 +3770,7 @@ internally use the two seeds to allow user to change the seed globally for a
 graph, or for only specific operations.
 
 For details on how the graph-level seed interacts with op seeds, see
-[`set_random_seed`](../../api_docs/python/constant_op.md#set_random_seed).
+@{tf.set_random_seed}.
 
 ##### Args:
 
