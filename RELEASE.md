@@ -1,3 +1,10 @@
+# Release 1.0.1
+
+## Bug Fixes and Other Changes
+* Change GraphConstructor to not increase the version when importing, but instead take the min of all versions.
+* Google Cloud Storage fixes.
+* Removed `tf.core` and `tf.python` modules from the API. These were never intended to be exposed. Please use the same objects through top-level `tf` module instead.
+
 # Release 1.0.0
 
 ## Major Features and Improvements
@@ -87,8 +94,12 @@ To help you upgrade your existing TensorFlow Python code to match the API change
 * In the C++ API (in tensorflow/cc), Input, Output, etc. have moved
   from the tensorflow::ops namespace to tensorflow.
 * Change arg order for `{softmax,sparse_softmax,sigmoid}_cross_entropy_with_logits` to be (labels, predictions), and force use of named args.
+* tf.nn.rnn_cell.* and most functions in tf.nn.rnn.* (with the exception of dynamic_rnn and raw_rnn) are temporarily in tf.contrib.rnn.  They will be moved back into core for TF 1.1.
+* `tf.nn.sampled_softmax_loss` and `tf.nn.nce_loss` have both changed their API such that you need to switch the `inputs, labels` to `labels, inputs` parameters.
+* The shape keyword argument of the `SparseTensor` constructor changes its name to `dense_shape` between Tensorflow 0.12 and Tensorflow 1.0.
 
 ## Bug Fixes and Other Changes
+* Numerous C++ API updates.
 * New op: `parallel_stack`.
 * Introducing common tf io compression options constants for
   RecordReader/RecordWriter.
@@ -127,6 +138,7 @@ To help you upgrade your existing TensorFlow Python code to match the API change
 * `tf.divide` now honors the name field.
 * Make metrics weight broadcasting more strict.
 * Add new queue-like `StagingArea` and new ops: `stage` and `unstage`.
+* Enable inplace update ops for strings on CPU. Speed up string concat.
 
 ## Thanks to our Contributors
 
@@ -193,7 +205,7 @@ answered questions, and were part of inspiring discussions.
   indexing now starts from 1 instead of 0, and `bus_id==0` is used where
   previously `BUS_ANY` was used.
 * `Env::FileExists` and `FileSystem::FileExists` now return a tensorflow::Status
-  intead of a bool. Any callers to this function can be converted to a bool
+  instead of a bool. Any callers to this function can be converted to a bool
   by adding .ok() to the call.
 * The C API type `TF_SessionWithGraph` has been renamed to `TF_Session`,
   indicating its preferred use in language bindings for TensorFlow.
@@ -212,7 +224,7 @@ answered questions, and were part of inspiring discussions.
 * `SparseTensor.shape` has been renamed to `SparseTensor.dense_shape`.  Same for
   `SparseTensorValue.shape`.
 * `Env::FileExists` and `FileSystem::FileExists` now return a
-  `tensorflow::Status` intead of a bool. Any callers to this function can be
+  `tensorflow::Status` instead of a bool. Any callers to this function can be
   converted to a bool by adding `.ok()` to the call.
 * C API: Type `TF_SessionWithGraph` has been renamed to `TF_Session`, indicating
   its preferred use in language bindings for TensorFlow. What was previously

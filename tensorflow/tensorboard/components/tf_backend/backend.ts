@@ -77,6 +77,8 @@ module TF.Backend {
     output_slot: number;
     value: number[];
   };
+  // When updating this type, keep it consistent with the HealthPill interface
+  // in tf_graph_common/lib/scene/scene.ts.
   export type HealthPillDatum = Datum & HealthPill;
   // A health pill response is a mapping from node name to a list of health pill
   // data entries.
@@ -198,8 +200,14 @@ module TF.Backend {
     /**
      * Returns a promise for requesting the health pills for a list of nodes.
      */
-    public healthPills(nodeNames: string[]): Promise<HealthPillsResponse> {
+    public healthPills(nodeNames: string[], step?: number):
+        Promise<HealthPillsResponse> {
       let postData = {'node_names': JSON.stringify(nodeNames)};
+      if (step !== undefined) {
+        // The user requested health pills for a specific step. This request
+        // might be slow since the backend reads events sequentially from disk.
+        postData['step'] = step;
+      }
       return this.requestManager.request(this.router.healthPills(), postData);
     }
 

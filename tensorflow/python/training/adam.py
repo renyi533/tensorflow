@@ -32,8 +32,6 @@ class AdamOptimizer(optimizer.Optimizer):
 
   See [Kingma et. al., 2014](http://arxiv.org/abs/1412.6980)
   ([pdf](http://arxiv.org/pdf/1412.6980.pdf)).
-
-  @@__init__
   """
 
   def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8,
@@ -64,9 +62,14 @@ class AdamOptimizer(optimizer.Optimizer):
     general. For example, when training an Inception network on ImageNet a
     current good choice is 1.0 or 0.1.
 
-    Note that in dense implement of this algorithm, m_t, v_t and variable will
-    update even if g is zero, but in sparse implement, m_t, v_t and variable
-    will not update in iterations g is zero.
+    The sparse implementation of this algorithm (used when the gradient is an
+    IndexedSlices object, typically because of `tf.gather` or an embedding
+    lookup in the forward pass) does apply momentum to variable slices even if
+    they were not used in the forward pass (meaning they have a gradient equal
+    to zero). Momentum decay (beta1) is also applied to the entire momentum
+    accumulator. This means that the sparse behavior is equivalent to the dense
+    behavior (in contrast to some momentum implementations which ignore momentum
+    unless a variable slice was actually used).
 
     Args:
       learning_rate: A Tensor or a floating point value.  The learning rate.
@@ -142,7 +145,7 @@ class AdamOptimizer(optimizer.Optimizer):
     m = self.get_slot(var, "m")
     v = self.get_slot(var, "v")
     return training_ops.resource_apply_adam(
-        var, m.handle, v.handle,
+        var.handle, m.handle, v.handle,
         math_ops.cast(self._beta1_power, grad.dtype.base_dtype),
         math_ops.cast(self._beta2_power, grad.dtype.base_dtype),
         math_ops.cast(self._lr_t, grad.dtype.base_dtype),

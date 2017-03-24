@@ -16,7 +16,7 @@ Before running TensorBoard, make sure you have generated summary data in a log
 directory by creating a summary writer:
 
 ``` python
-# sess.graph_def is the graph definition; that enables the Graph Visualizer.
+# sess.graph contains the graph definition; that enables the Graph Visualizer.
 
 file_writer = tf.summary.FileWriter('/path/to/logs', sess.graph)
 ```
@@ -91,7 +91,7 @@ produce a consistent history of what happened.
 ### Runs: Comparing different executions of your model
 
 You may want to visually compare multiple executions of your model; for example,
-suppose you've changed the hyperparameters and want to see if its converging
+suppose you've changed the hyperparameters and want to see if it's converging
 faster. TensorBoard enables this through different "runs". When TensorBoard is
 passed a `logdir` at startup, it recursively walks the directory tree rooted at
 `logdir` looking for subdirectories that contain tfevents data. Every time it

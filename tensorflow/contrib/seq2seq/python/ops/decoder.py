@@ -35,7 +35,7 @@ from tensorflow.python.ops import tensor_array_ops
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.util import nest
 
-__all__ = ["Decoder", "dynamic_decode_rnn"]
+__all__ = ["Decoder", "dynamic_decode"]
 
 
 def _transpose_batch_time(x):
@@ -131,13 +131,13 @@ def _create_zero_outputs(size, dtype, batch_size):
   return nest.map_structure(_create, size, dtype)
 
 
-def dynamic_decode_rnn(decoder,
-                       output_time_major=False,
-                       impute_finished=False,
-                       maximum_iterations=None,
-                       parallel_iterations=32,
-                       swap_memory=False,
-                       scope=None):
+def dynamic_decode(decoder,
+                   output_time_major=False,
+                   impute_finished=False,
+                   maximum_iterations=None,
+                   parallel_iterations=32,
+                   swap_memory=False,
+                   scope=None):
   """Perform dynamic decoding with `decoder`.
 
   Args:
@@ -249,8 +249,14 @@ def dynamic_decode_rnn(decoder,
 
       # Copy through states past finish
       def _maybe_copy_state(new, cur):
-        return (new if isinstance(cur, tensor_array_ops.TensorArray) else
-                array_ops.where(finished, cur, new))
+        # TensorArrays and scalar states get passed through.
+        if isinstance(cur, tensor_array_ops.TensorArray):
+          pass_through = True
+        else:
+          new.set_shape(cur.shape)
+          pass_through = (new.shape.ndims == 0)
+        return new if pass_through else array_ops.where(finished, cur, new)
+
       if impute_finished:
         next_state = nest.map_structure(
             _maybe_copy_state, decoder_state, state)

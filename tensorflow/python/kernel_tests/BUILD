@@ -96,6 +96,17 @@ cuda_py_test(
 )
 
 tf_py_test(
+    name = "bincount_op_test",
+    size = "small",
+    srcs = ["bincount_op_test.py"],
+    additional_deps = [
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:framework_for_generated_wrappers",
+    ],
+)
+
+tf_py_test(
     name = "candidate_sampler_ops_test",
     size = "small",
     srcs = ["candidate_sampler_ops_test.py"],
@@ -540,7 +551,7 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "resource_variable_ops_test",
     size = "small",
     srcs = ["resource_variable_ops_test.py"],
@@ -567,7 +578,7 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "scatter_nd_ops_test",
     size = "medium",
     srcs = ["scatter_nd_ops_test.py"],
@@ -1359,6 +1370,7 @@ cuda_py_test(
         "//tensorflow/python:random_ops",
         "//tensorflow/python:variables",
     ],
+    shard_count = 20,
 )
 
 cuda_py_test(
@@ -2038,6 +2050,7 @@ cuda_py_test(
         "//third_party/py/numpy",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:nn",
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:nn_ops",
@@ -2064,6 +2077,7 @@ cuda_py_test(
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python:spectral_ops",
     ],
 )
 
@@ -2077,6 +2091,10 @@ cuda_py_test(
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:nn_ops",
+    ],
+    tags = [
+        "manual",
+        "notap",
     ],
 )
 
@@ -2101,6 +2119,21 @@ cuda_py_test(
     name = "random_gamma_test",
     size = "medium",
     srcs = ["random_gamma_test.py"],
+    additional_deps = [
+        "//third_party/py/numpy",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:platform",
+        "//tensorflow/python:random_ops",
+    ],
+)
+
+cuda_py_test(
+    name = "random_poisson_test",
+    size = "medium",
+    srcs = ["random_poisson_test.py"],
     additional_deps = [
         "//third_party/py/numpy",
         "//tensorflow/python:array_ops",

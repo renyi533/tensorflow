@@ -60,6 +60,7 @@ FakeQueue
 FIFOQueue
 FIFOQueueV2
 GetSessionHandle
+GetSessionHandleV2
 GetSessionTensor
 HashTable
 InitializeTable
@@ -282,6 +283,7 @@ ParseSingleSequenceExample
 
 # random_ops
 RandomGamma
+RandomPoisson
 RandomUniform
 RandomUniformInt
 RandomShuffle

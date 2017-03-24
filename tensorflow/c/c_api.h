@@ -810,6 +810,13 @@ extern void TF_ImportGraphDefOptionsAddInputMapping(
     TF_ImportGraphDefOptions* opts, const char* src_name, int src_index,
     TF_Output dst);
 
+// Set any imported nodes with control input `src_name` to have that input
+// replaced with `dst`. `src_name` refers to a node in the graph to be imported,
+// `dst` references an operation already existing in the graph being imported
+// into.
+extern void TF_GraphImportGraphDefOptionsRemapControlDependency(
+    TF_ImportGraphDefOptions* opts, const char* src_name, TF_Operation* dst);
+
 // Cause the imported graph to have a control dependency on `oper`. `oper`
 // should exist in the graph being imported into.
 extern void TF_ImportGraphDefOptionsAddControlDependency(
@@ -932,10 +939,6 @@ typedef struct TF_Session TF_Session;
 extern TF_Session* TF_NewSession(TF_Graph* graph, const TF_SessionOptions* opts,
                                  TF_Status* status);
 
-#ifndef __ANDROID__
-// TODO(ashankar): Remove the __ANDROID__ guard. This will require ensuring that
-// the tensorflow/cc/saved_model:loader build target is Android friendly.
-
 // This function creates a new TF_Session (which is created on success) using
 // `session_options`, and then initializes state (restoring tensors and other
 // assets) using `run_options`.
@@ -954,7 +957,6 @@ TF_Session* TF_LoadSessionFromSavedModel(
     const TF_SessionOptions* session_options, const TF_Buffer* run_options,
     const char* export_dir, const char* const* tags, int tags_len,
     TF_Graph* graph, TF_Buffer* meta_graph_def, TF_Status* status);
-#endif  // __ANDROID__
 
 // Close a session.
 //
@@ -1013,7 +1015,9 @@ extern void TF_SessionRun(TF_Session* session,
 // Set up the graph with the intended feeds (inputs) and fetches (outputs) for a
 // sequence of partial run calls.
 //
-// On success, returns a handle that is used for subsequent PRun calls.
+// On success, returns a handle that is used for subsequent PRun calls. The
+// handle should be deleted with TF_DeletePRunHandle when it is no longer
+// needed.
 //
 // On failure, out_status contains a tensorflow::Status with an error
 // message.
@@ -1046,6 +1050,10 @@ extern void TF_SessionPRun(TF_Session*, const char* handle,
                            int ntargets,
                            // Output status
                            TF_Status*);
+
+// Deletes a handle allocated by TF_SessionPRunSetup.
+// Once called, no more calls to TF_SessionPRun should be made.
+extern void TF_DeletePRunHandle(const char* handle);
 
 // --------------------------------------------------------------------------
 // The deprecated session API.  Please switch to the above instead of
