@@ -117,9 +117,6 @@ class SemiSyncReplicasOptimizer(optimizer.Optimizer):
         variables.global_variables())
 
     with ops.name_scope(None, self._name):
-
-      aggregated_grads_and_vars = zip(aggregated_grad, var_list)
-
       # sync_op will be assigned to the same device as the global step.
       update_op = self._opt.apply_gradients(grads_and_vars,
                                             global_step)
@@ -264,7 +261,7 @@ class SemiSyncReplicasOptimizer(optimizer.Optimizer):
 class _SemiSyncReplicasOptimizerHook(session_run_hook.SessionRunHook):
   """A SessionRunHook handles ops related to SyncReplicasOptimizer."""
 
-  def __init__(self, sync_optimizer, is_chief, num_tokens):
+  def __init__(self, semi_sync_optimizer, is_chief, num_tokens):
     """Creates hook to handle SyncReplicaOptimizer initialization ops.
 
     Args:
@@ -272,37 +269,37 @@ class _SemiSyncReplicasOptimizerHook(session_run_hook.SessionRunHook):
       is_chief: `Bool`, whether is this a chief replica or not.
       num_tokens: Number of tokens to add to the queue.
     """
-    self._sync_optimizer = sync_optimizer
+    self._semi_sync_optimizer = semi_sync_optimizer
     self._is_chief = is_chief
     self._num_tokens = num_tokens
 
   def begin(self):
-    if self._sync_optimizer._gradients_applied is False:  # pylint: disable=protected-access
+    if self._semi_sync_optimizer._gradients_applied is False:  # pylint: disable=protected-access
       raise ValueError(
-          "SyncReplicasOptimizer.apply_gradient should be called before using "
+          "SemiSyncReplicasOptimizer.apply_gradient should be called before using "
           "the hook.")
     if self._is_chief:
-      self._local_init_op = self._sync_optimizer.chief_init_op
+      self._local_init_op = self._semi_sync_optimizer.chief_init_op
       self._ready_for_local_init_op = (
-          self._sync_optimizer.ready_for_local_init_op)
-      self._q_runner = self._sync_optimizer.get_chief_queue_runner()
-      self._init_tokens_op = self._sync_optimizer.get_init_tokens_op(
+          self._semi_sync_optimizer.ready_for_local_init_op)
+      self._q_runner = self._semi_sync_optimizer.get_chief_queue_runner()
+      self._init_tokens_op = self._semi_sync_optimizer.get_init_tokens_op(
           self._num_tokens)
     else:
-      self._local_init_op = self._sync_optimizer.local_step_init_op
+      self._local_init_op = self._semi_sync_optimizer.local_step_init_op
       self._ready_for_local_init_op = (
-          self._sync_optimizer.ready_for_local_init_op)
+          self._semi_sync_optimizer.ready_for_local_init_op)
       self._q_runner = None
       self._init_tokens_op = None
 
   def after_create_session(self, session, coord):
-    """Runs SyncReplicasOptimizer initialization ops."""
+    """Runs SemiSyncReplicasOptimizer initialization ops."""
     local_init_success, msg = session_manager._ready(  # pylint: disable=protected-access
         self._ready_for_local_init_op, session,
-        "Model is not ready for SyncReplicasOptimizer local init.")
+        "Model is not ready for SemiSyncReplicasOptimizer local init.")
     if not local_init_success:
       raise RuntimeError(
-          "Init operations did not make model ready for SyncReplicasOptimizer "
+          "Init operations did not make model ready for SemiSyncReplicasOptimizer "
           "local_init. Init op: %s, error: %s" %
           (self._local_init_op.name, msg))
     session.run(self._local_init_op)
