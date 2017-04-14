@@ -144,17 +144,21 @@ class DCAsgdOptimizer(optimizer.Optimizer):
 
     self._global_step = global_step
     with ops.name_scope("gradient_compensation", self._name) as name:
-      count = 0
       new_grads = []
       var_list = []
       for g,v in grads_and_vars:
         if v in self._var_local_var_maps:
           with ops.device(v.device):
             var_diff = math_ops.subtract(v, self._var_local_var_maps[v])
-            comp2 = math_ops.multiply(math_ops.multiply(var_diff, math_ops.multiply(g, g)), self._lambda2)
-            comp1 = math_ops.multiply(math_ops.multiply(var_diff, math_ops.abs(g)),  self._lambda1)
-            comp = math_ops.add(comp2, comp1)
-            g = math_ops.add(g, comp)
+            g = control_flow_ops.cond(self._lambda2>0,
+                    lambda: math_ops.add(g, math_ops.multiply(math_ops.multiply(var_diff, math_ops.multiply(g, g)), self._lambda2)),
+                    lambda: g)
+
+            g = control_flow_ops.cond(self._lambda1>0,
+                    lambda: math_ops.add(g, math_ops.multiply(math_ops.multiply(var_diff, math_ops.abs(g)),  self._lambda1)),
+                    lambda: g)
+
+
         new_grads.append(g)
         var_list.append(v)
       comp_grads_and_vars = list(zip(new_grads, var_list))
