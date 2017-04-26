@@ -46,6 +46,7 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
                grad_min,
                grad_max,
                local_idx=-1,
+               is_adaptive=False,
                use_locking=False,
                name="QuantizationOptimizerWrapper"):
 
@@ -57,6 +58,7 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
     self._local_idx = local_idx
     self._grad_min = grad_min
     self._grad_max = grad_max
+    self._is_adaptive = is_adaptive
 
 
   def compute_gradients(self, loss, var_list=None,
@@ -142,9 +144,21 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
       for g,v in grads_and_vars:
         if v in self._var_gradient_maps:
           with ops.device(g.device):
-            g_out, out_min, out_max = array_ops.quantize_v2(g+self._var_gradient_maps[v], self._grad_min, self._grad_max, qint8)
+            accumu_g = g+self._var_gradient_maps[v]
+
+            if self._is_adaptive:
+              accumu_g_mean = math_ops.reduce_mean(accumu_g)
+              accumu_g_diff = accumu_g-accumu_g_mean
+              accumu_g_square = math_ops.multiply(accumu_g_diff, accumu_g_diff)
+              accumu_g_var = math_ops.sqrt(math_ops.reduce_mean(accumu_g_square))
+              g_min = accumu_g_mean-math_ops.multiply(accumu_g_var, 2)
+              g_max = accumu_g_mean+math_ops.multiply(accumu_g_var, 2)
+              g_out, out_min, out_max = array_ops.quantize_v2(accumu_g, g_min, g_max, qint8)
+            else:
+              g_out, out_min, out_max = array_ops.quantize_v2(accumu_g, self._grad_min, self._grad_max, qint8)
+
             recovered_g = array_ops.dequantize(g_out, out_min, out_max)
-            assign_op = state_ops.assign(self._var_gradient_maps[v], g+self._var_gradient_maps[v]-recovered_g)
+            assign_op = state_ops.assign(self._var_gradient_maps[v], accumu_g-recovered_g)
           with ops.control_dependencies([assign_op]):
             with ops.device(v.device):
               ps_recovered_g = array_ops.dequantize(g_out, out_min, out_max)
