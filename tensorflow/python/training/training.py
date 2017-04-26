@@ -112,6 +112,7 @@ from tensorflow.python.training.proximal_gradient_descent import ProximalGradien
 from tensorflow.python.training.sync_replicas_optimizer import SyncReplicasOptimizer
 from tensorflow.python.training.semi_sync_replicas_optimizer import SemiSyncReplicasOptimizer
 from tensorflow.python.training.dc_asgd_optimizer import DCAsgdOptimizer
+from tensorflow.python.training.quantization_optimizer_wrapper import QuantizationOptimizerWrapper
 
 # Utility classes for training.
 from tensorflow.python.training.coordinator import Coordinator
@@ -206,6 +207,7 @@ _allowed_symbols = [
     "SyncReplicasOptimizer",
     "SemiSyncReplicasOptimizer",
     "DCAsgdOptimizer",
+    "QuantizationOptimizerWrapper",
     # Protobufs:
     "BytesList",          # from example_pb2.
     "ClusterDef",
