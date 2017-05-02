@@ -57,14 +57,14 @@ class OneBitQuantizationOp : public OpKernel {
     TensorShape out_compress_shape(
         {row_count_compress, col_count});
     Tensor* out = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, out_compress_shape, &out));
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(1, out_compress_shape, &out));
     auto out_flat = out->flat<uint8>();
 
 
     TensorShape gradient_mean_shape(
         {2, col_count});
     Tensor* gradient_mean = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, gradient_mean_shape, &gradient_mean));
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(2, gradient_mean_shape, &gradient_mean));
     auto gradient_mean_flat = gradient_mean->flat<T>();
 
     
@@ -72,17 +72,21 @@ class OneBitQuantizationOp : public OpKernel {
     {
       gradient_mean_flat(get_idx(0, i, col_count)) = 0.0;
       gradient_mean_flat(get_idx(1, i, col_count)) = 0.0;
+      int pos_count =0;
+      int neg_count =0;
       for (int j=0; j<row_count; j++)
       {
         int64 row_idx_comp = j/8;
         int64 offset = j%8;
-        if (gradients_flat(get_idx(j, i, col_count)) >0)
+       
+        if (gradients_flat(get_idx(j, i, col_count)) >=0)
         {
           gradient_mean_flat(get_idx(0, i, col_count)) = 
               gradient_mean_flat(get_idx(0, i, col_count))+gradients_flat(get_idx(j, i, col_count));
 
           out_flat(get_idx(row_idx_comp, i, col_count)) = 
               out_flat(get_idx(row_idx_comp, i, col_count)) | 1<<offset;  
+          pos_count++;
         }
         else
         {
@@ -90,11 +94,19 @@ class OneBitQuantizationOp : public OpKernel {
               gradient_mean_flat(get_idx(1, i, col_count))+gradients_flat(get_idx(j, i, col_count));
 
           out_flat(get_idx(row_idx_comp, i, col_count)) = 
-              out_flat(get_idx(row_idx_comp, i, col_count)) & ~(1<<offset);         
+              out_flat(get_idx(row_idx_comp, i, col_count)) & ~(1<<offset); 
+          neg_count++;
         }
       }
-      gradient_mean_flat(get_idx(0, i, col_count)) = gradient_mean_flat(get_idx(0, i, col_count))/row_count;
-      gradient_mean_flat(get_idx(1, i, col_count)) = gradient_mean_flat(get_idx(1, i, col_count))/row_count;
+      if (pos_count>0)
+      {
+        gradient_mean_flat(get_idx(0, i, col_count)) = gradient_mean_flat(get_idx(0, i, col_count))/pos_count;
+      }
+
+      if (neg_count>0)
+      {
+        gradient_mean_flat(get_idx(1, i, col_count)) = gradient_mean_flat(get_idx(1, i, col_count))/neg_count;
+      }
     }
   }
   
