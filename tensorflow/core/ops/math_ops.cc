@@ -1079,6 +1079,16 @@ REGISTER_OP("OneBitQuantization")
     .Output("compressed_gradient: uint8")
     .Output("gradient_mean: T")
     .Attr("T: {float, double}")
+    .SetShapeFn([](InferenceContext* c) {
+        std::vector<DimensionHandle> dims;
+        dims.emplace_back(c->MakeDim(1));
+        c->set_output(0, c->MakeShape(dims));
+        ShapeHandle a;
+        TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &a));
+        //c->set_output(1, c->Matrix(c->Dim(a, 0), c->Dim(a, 1)));
+        c->set_output(2, c->Matrix(2, c->Dim(a, 1)));
+        return Status::OK();
+    })
     .Doc(R"doc(
 compress float values to 1 bit.
 )doc");
@@ -1089,6 +1099,12 @@ REGISTER_OP("OneBitDequantization")
     .Input("gradient_mean: T")
     .Output("gradient: T")
     .Attr("T: {float, double}")
+    .SetShapeFn([](InferenceContext* c) {
+        ShapeHandle a;
+        TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &a));
+        //c->set_output(0, c->Matrix(c->Dim(a, 0), c->Dim(a, 1)));
+        return Status::OK();
+    })
     .Doc(R"doc(
 decompress float values from 1 bit representation.
 )doc");
