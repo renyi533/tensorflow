@@ -2105,6 +2105,7 @@ cc_library(
         ":cwise_op",
         ":fft_ops",
         ":matmul_op",
+        ":one_bit_quantization_op",
         ":reduction_ops",
         ":scan_ops",
         ":segment_reduction_ops",
@@ -2157,6 +2158,12 @@ tf_kernel_library(
 tf_kernel_library(
     name = "cwise_op",
     prefix = "cwise_op",
+    deps = MATH_DEPS,
+)
+
+tf_kernel_library(
+    name = "one_bit_quantization_op",
+    prefix = "one_bit_quantization_op",
     deps = MATH_DEPS,
 )
 
@@ -3542,6 +3549,7 @@ filegroup(
         "immutable_constant_op.h",
         "matmul_op.cc",
         "matmul_op.h",
+        "one_bit_quantization_op.cc",
         "no_op.cc",
         "no_op.h",
         "non_max_suppression_op.cc",

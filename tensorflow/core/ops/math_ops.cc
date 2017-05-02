@@ -1073,6 +1073,26 @@ least one of "a" or "b" is sparse. The breakeven for using this versus a dense
 matrix multiply on one platform was 30% zero values in the sparse matrix.
 )doc");
 
+REGISTER_OP("OneBitQuantization")
+    .Input("gradient: T")
+    .Output("row_count: int64")
+    .Output("compressed_gradient: uint8")
+    .Output("gradient_mean: T")
+    .Attr("T: {float, double}")
+    .Doc(R"doc(
+compress float values to 1 bit.
+)doc");
+
+REGISTER_OP("OneBitDequantization")
+    .Input("row_count: int64")
+    .Input("compressed_gradient: uint8")
+    .Input("gradient_mean: T")
+    .Output("gradient: T")
+    .Attr("T: {float, double}")
+    .Doc(R"doc(
+decompress float values from 1 bit representation.
+)doc");
+
 // --------------------------------------------------------------------------
 
 // For operations where the output is a reduction function along some
