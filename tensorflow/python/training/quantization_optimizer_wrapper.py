@@ -43,22 +43,23 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
 
   def __init__(self,
                opt,
-               grad_min,
-               grad_max,
-               local_idx=-1,
-               is_adaptive=False,
+               worker_id,
+               is_one_bit=False,
+               is_adaptive=True,
+               grad_min=-1.0,
+               grad_max=1.0,
                use_locking=False,
                name="QuantizationOptimizerWrapper"):
 
     super(QuantizationOptimizerWrapper, self).__init__(use_locking, name)
     logging.info("QuantizationOptimizerWrapper init")
     self._opt = opt
-    self._global_step = None
     self._var_gradient_maps = {}
-    self._local_idx = local_idx
+    self._local_idx = worker_id
     self._grad_min = grad_min
     self._grad_max = grad_max
     self._is_adaptive = is_adaptive
+    self._is_one_bit = is_one_bit
 
 
   def compute_gradients(self, loss, var_list=None,
@@ -134,14 +135,22 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
     if not grads_and_vars:
       raise ValueError("Must supply at least one variable")
 
-    if global_step is None:
-      raise ValueError("Global step is required to check staleness")
+    with ops.name_scope("gradient_compression", self._name) as name:
+      quantized_grads_and_vars = None
+      if not self._is_one_bit:
+        quantized_grads_and_vars = uint8_quantization(grads_and_vars)
+      else:
+        quantized_grads_and_vars = one_bit_quantization(grads_and_vars)
 
-    self._global_step = global_step
-    with ops.name_scope("gradient_compensation", self._name) as name:
+      train_op = self._opt.apply_gradients(quantized_grads_and_vars, global_step=global_step)
+
+      return train_op
+
+  def uint8_quantization(grads_and_vars):
       new_grads = []
       var_list = []
       for g,v in grads_and_vars:
+        ps_recovered_g = g
         if v in self._var_gradient_maps:
           with ops.device(g.device):
             accumu_g = g+self._var_gradient_maps[v]
@@ -166,11 +175,28 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
         new_grads.append(ps_recovered_g)
         var_list.append(v)
       quantized_grads_and_vars = list(zip(new_grads, var_list))
+      return quantized_grads_and_vars
 
-      train_op = self._opt.apply_gradients(quantized_grads_and_vars, global_step=global_step)
+  def one_bit_quantization(grads_and_vars):
+      new_grads = []
+      var_list = []
+      for g,v in grads_and_vars:
+        ps_recovered_g = g
+        if v in self._var_gradient_maps:
+          with ops.device(g.device):
+            accumu_g = g+self._var_gradient_maps[v]
+            row_cnt, gradient_comp, gradient_mean = math_ops.one_bit_quantization(accumu_g)
+            recovered_g = math_ops.one_bit_dequantization(row_cnt, gradient_comp, gradient_mean)
+            assign_op = state_ops.assign(self._var_gradient_maps[v], accumu_g-recovered_g)
 
-      return train_op
+          with ops.control_dependencies([assign_op]):
+            with ops.device(v.device):
+              ps_recovered_g = math_ops.one_bit_dequantization(row_cnt, gradient_comp, gradient_mean)
 
+        new_grads.append(ps_recovered_g)
+        var_list.append(v)
+      quantized_grads_and_vars = list(zip(new_grads, var_list))
+      return quantized_grads_and_vars
 
   def get_slot(self, *args, **kwargs):
     """Return a slot named "name" created for "var" by the Optimizer.
