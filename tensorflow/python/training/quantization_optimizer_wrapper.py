@@ -138,15 +138,15 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
     with ops.name_scope("gradient_compression", self._name) as name:
       quantized_grads_and_vars = None
       if not self._is_one_bit:
-        quantized_grads_and_vars = uint8_quantization(grads_and_vars)
+        quantized_grads_and_vars = self.uint8_quantization(grads_and_vars)
       else:
-        quantized_grads_and_vars = one_bit_quantization(grads_and_vars)
+        quantized_grads_and_vars = self.one_bit_quantization(grads_and_vars)
 
       train_op = self._opt.apply_gradients(quantized_grads_and_vars, global_step=global_step)
 
       return train_op
 
-  def uint8_quantization(grads_and_vars):
+  def uint8_quantization(self, grads_and_vars):
       new_grads = []
       var_list = []
       for g,v in grads_and_vars:
@@ -177,7 +177,7 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
       quantized_grads_and_vars = list(zip(new_grads, var_list))
       return quantized_grads_and_vars
 
-  def one_bit_quantization(grads_and_vars):
+  def one_bit_quantization(self, grads_and_vars):
       new_grads = []
       var_list = []
       for g,v in grads_and_vars:
