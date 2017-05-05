@@ -101,12 +101,28 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
       var_list = ops.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES)
     with ops.name_scope("local_delayed_gradient", self._name) as name:
       for v in var_list:
-        delayed_gradient = variables.Variable(
-                        array_ops.zeros(v.get_shape(),dtype=v.dtype),
+        delayed_gradient = None
+        if self._is_one_bit:
+          v_shape = v.get_shape().as_list()
+          last_dim = v_shape[-1]
+          first_dim = 1
+          for k in range(0,len(v_shape)-1):
+            first_dim = first_dim*v_shape[k]
+
+          delayed_gradient = variables.Variable(
+                        array_ops.zeros([first_dim,last_dim],dtype=v.dtype),
                         trainable=False,
                         collections=[ops.GraphKeys.LOCAL_VARIABLES],
                         #dtype=v.dtype,
                         name="local_delayed_gradient")
+        else:
+          delayed_gradient = variables.Variable(
+                        array_ops.zeros(v.get_shape(), dtype=v.dtype),
+                        trainable=False,
+                        collections=[ops.GraphKeys.LOCAL_VARIABLES],
+                        #dtype=v.dtype,
+                        name="local_delayed_gradient")
+
         self._var_gradient_maps[v] = delayed_gradient
 
   def apply_gradients(self, grads_and_vars, global_step=None, name=None):
@@ -184,7 +200,8 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
         ps_recovered_g = g
         if v in self._var_gradient_maps:
           with ops.device(g.device):
-            accumu_g = g+self._var_gradient_maps[v]
+            reshaped_g = array_ops.reshape(g, self._var_gradient_maps[v].get_shape())
+            accumu_g = reshaped_g+self._var_gradient_maps[v]
             row_cnt, gradient_comp, gradient_mean = math_ops.one_bit_quantization(accumu_g)
             recovered_g = math_ops.one_bit_dequantization(row_cnt, gradient_comp, gradient_mean)
             assign_op = state_ops.assign(self._var_gradient_maps[v], accumu_g-recovered_g)
@@ -192,6 +209,7 @@ class QuantizationOptimizerWrapper(optimizer.Optimizer):
           with ops.control_dependencies([assign_op]):
             with ops.device(v.device):
               ps_recovered_g = math_ops.one_bit_dequantization(row_cnt, gradient_comp, gradient_mean)
+              ps_recovered_g = array_ops.reshape(ps_recovered_g, v.get_shape())
 
         new_grads.append(ps_recovered_g)
         var_list.append(v)
