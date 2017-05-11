@@ -59,9 +59,15 @@ Status CheckSignature(const DataTypeVector& types,
 
 XlaCompiler::XlaCompiler(XlaCompiler::Options options)
     : options_(std::move(options)),
+      initialization_status_(Status::OK()),
       next_step_id_(1),
       device_(new XlaCompilationDevice(SessionOptions(), options_.device_type)),
-      device_mgr_({device_}) {}
+      device_mgr_({device_}) {
+  if (options_.populate_resource_manager) {
+    initialization_status_ =
+        (*options_.populate_resource_manager)(device_->resource_manager());
+  }
+}
 
 XlaCompiler::~XlaCompiler() = default;
 
@@ -109,11 +115,12 @@ Status XlaCompiler::CompileFunction(
   }
 
   // Optimize the graph before running the compiler.
-  // TODO(pbar): The constant folder currently does not simplify int32
-  // operations for devices other than CPU.
   OptimizerOptions opts;
+  opts.set_do_common_subexpression_elimination(true);
+  opts.set_do_function_inlining(true);
+  opts.set_do_constant_folding(true);
   GraphOptimizer optimizer(opts);
-  OptimizeGraph(flr, &graph);
+  optimizer.Optimize(flr, flr->env(), /*device=*/nullptr, &graph);
 
   if (VLOG_IS_ON(1)) {
     dump_graph::DumpGraphToFile(
@@ -378,6 +385,9 @@ Status XlaCompiler::CompileGraph(string const& name,
                                  const std::vector<XlaCompiler::Argument>& args,
                                  CompilationResult* result) {
   VLOG(1) << "Executing graph symbolically to populate ComputationBuilder.";
+
+  // Report the error here if initialization failed.
+  TF_RETURN_IF_ERROR(initialization_status_);
 
   xla::ComputationBuilder builder(client(), name);
   XlaContext* context =

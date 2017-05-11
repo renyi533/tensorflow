@@ -1,10 +1,24 @@
 # TensorFlow external dependencies that can be loaded in WORKSPACE files.
 
+load("//third_party/gpus:cuda_configure.bzl", "cuda_configure")
+load("//third_party/sycl:sycl_configure.bzl", "sycl_configure")
 load("@io_bazel_rules_closure//closure/private:java_import_external.bzl", "java_import_external")
 load("@io_bazel_rules_closure//closure:defs.bzl", "filegroup_external")
 load("@io_bazel_rules_closure//closure:defs.bzl", "webfiles_external")
-load("//third_party/gpus:cuda_configure.bzl", "cuda_configure")
-load("//third_party/sycl:sycl_configure.bzl", "sycl_configure")
+load("//third_party/py:python_configure.bzl", "python_configure")
+
+
+def _is_windows(repository_ctx):
+  """Returns true if the host operating system is windows."""
+  return repository_ctx.os.name.lower().find("windows") != -1
+
+
+def _get_env_var(repository_ctx, name):
+  """Find an environment variable."""
+  if name in repository_ctx.os.environ:
+    return repository_ctx.os.environ[name]
+  else:
+    return None
 
 
 # Parse the bazel version string from `native.bazel_version`.
@@ -14,20 +28,23 @@ def _parse_bazel_version(bazel_version):
 
   # Split into (release, date) parts and only return the release
   # as a tuple of integers.
-  parts = version.split('-', 1)
+  parts = version.split("-", 1)
 
   # Turn "release" into a tuple of strings
   version_tuple = ()
-  for number in parts[0].split('.'):
+  for number in parts[0].split("."):
     version_tuple += (str(number),)
   return version_tuple
+
 
 # Check that a specific bazel version is being used.
 def check_version(bazel_version):
   if "bazel_version" not in dir(native):
-    fail("\nCurrent Bazel version is lower than 0.2.1, expected at least %s\n" % bazel_version)
+    fail("\nCurrent Bazel version is lower than 0.2.1, expected at least %s\n" %
+         bazel_version)
   elif not native.bazel_version:
-    print("\nCurrent Bazel is not a release version, cannot check for compatibility.")
+    print("\nCurrent Bazel is not a release version, cannot check for " +
+          "compatibility.")
     print("Make sure that you are running at least Bazel %s.\n" % bazel_version)
   else:
     current_bazel_version = _parse_bazel_version(native.bazel_version)
@@ -35,65 +52,141 @@ def check_version(bazel_version):
     if minimum_bazel_version > current_bazel_version:
       fail("\nCurrent Bazel version is {}, expected at least {}\n".format(
           native.bazel_version, bazel_version))
-  pass
+
 
 def _repos_are_siblings():
   return Label("@foo//bar").workspace_root.startswith("../")
 
+
 # Temporary workaround to support including TensorFlow as a submodule until this
 # use-case is supported in the next Bazel release.
 def _temp_workaround_http_archive_impl(repo_ctx):
-   repo_ctx.template("BUILD", repo_ctx.attr.build_file,
-                     {
-                         "%prefix%" : ".." if _repos_are_siblings() else "external",
-                         "%ws%": repo_ctx.attr.repository
-                     }, False)
-   repo_ctx.download_and_extract(repo_ctx.attr.urls, "", repo_ctx.attr.sha256,
-                                 "", repo_ctx.attr.strip_prefix)
+  repo_ctx.template("BUILD", repo_ctx.attr.build_file, {
+      "%prefix%": ".." if _repos_are_siblings() else "external",
+      "%ws%": repo_ctx.attr.repository
+  }, False)
+  repo_ctx.download_and_extract(repo_ctx.attr.urls, "", repo_ctx.attr.sha256,
+                                "", repo_ctx.attr.strip_prefix)
+  if repo_ctx.attr.patch_file != None:
+    _apply_patch(repo_ctx, repo_ctx.attr.patch_file)
+
 
 temp_workaround_http_archive = repository_rule(
-   implementation=_temp_workaround_http_archive_impl,
-   attrs = {
-      "build_file": attr.label(),
-      "repository": attr.string(),
-      "urls": attr.string_list(default = []),
-      "sha256": attr.string(default = ""),
-      "strip_prefix": attr.string(default = ""),
-   })
+    implementation = _temp_workaround_http_archive_impl,
+    attrs = {
+        "build_file": attr.label(),
+        "repository": attr.string(),
+        "patch_file": attr.label(default = None),
+        "urls": attr.string_list(default = []),
+        "sha256": attr.string(default = ""),
+        "strip_prefix": attr.string(default = ""),
+    },
+)
+
+def _http_files_with_build_impl(repo_ctx):
+  repo_ctx.template("BUILD", repo_ctx.attr.build_file, {
+      "%prefix%": ".." if _repos_are_siblings() else "external",
+      "%ws%": repo_ctx.attr.repository
+  }, False)
+  for output, urls in repo_ctx.attr.file_urls.items():
+    repo_ctx.download(urls, output,
+                      repo_ctx.attr.sha256, executable=False)
+
+# Downloads a set of files and adds a BUILD file.
+http_files_with_build = repository_rule(
+    implementation = _http_files_with_build_impl,
+    attrs = {
+        "build_file": attr.label(),
+        "repository": attr.string(),
+        # Map from output file to URLs to download that file from.
+        "file_urls": attr.string_list_dict(default = {}),
+        "sha256": attr.string(default = ""),
+    },
+)
+
+
+# Executes specified command with arguments and calls 'fail' if it exited with
+# non-zero code
+def _execute_and_check_ret_code(repo_ctx, cmd_and_args):
+  result = repo_ctx.execute(cmd_and_args, timeout=10)
+  if result.return_code != 0:
+    fail(("Non-zero return code({1}) when executing '{0}':\n" + "Stdout: {2}\n"
+          + "Stderr: {3}").format(" ".join(cmd_and_args), result.return_code,
+                                  result.stdout, result.stderr))
+
+
+# Apply a patch_file to the repository root directory
+# Runs 'patch -p1'
+def _apply_patch(repo_ctx, patch_file):
+  cmd = [
+      "patch", "-p1", "-d", repo_ctx.path("."), "-i", repo_ctx.path(patch_file)
+  ]
+  if _is_windows(repo_ctx):
+    bazel_sh = _get_env_var(repo_ctx, "BAZEL_SH")
+    if not bazel_sh:
+      fail("BAZEL_SH environment variable is not set")
+    cmd = [bazel_sh, "-c", " ".join(cmd)]
+  _execute_and_check_ret_code(repo_ctx, cmd)
+
+
+# Download the repository and apply a patch to its root
+def _patched_http_archive_impl(repo_ctx):
+  repo_ctx.download_and_extract(
+      repo_ctx.attr.urls,
+      sha256=repo_ctx.attr.sha256,
+      stripPrefix=repo_ctx.attr.strip_prefix)
+  _apply_patch(repo_ctx, repo_ctx.attr.patch_file)
+
+
+patched_http_archive = repository_rule(
+    implementation = _patched_http_archive_impl,
+    attrs = {
+        "patch_file": attr.label(),
+        "build_file": attr.label(),
+        "repository": attr.string(),
+        "urls": attr.string_list(default = []),
+        "sha256": attr.string(default = ""),
+        "strip_prefix": attr.string(default = ""),
+    },
+)
+
 
 # If TensorFlow is linked as a submodule.
 # path_prefix and tf_repo_name are no longer used.
-def tf_workspace(path_prefix = "", tf_repo_name = ""):
+def tf_workspace(path_prefix="", tf_repo_name=""):
   # We must check the bazel version before trying to parse any other BUILD
   # files, in case the parsing of those build files depends on the bazel
   # version we require here.
   check_version("0.4.5")
-  cuda_configure(name = "local_config_cuda")
-  sycl_configure(name = "local_config_sycl")
+  cuda_configure(name="local_config_cuda")
+  sycl_configure(name="local_config_sycl")
+  python_configure(name="local_config_python")
   if path_prefix:
-    print("path_prefix was specified to tf_workspace but is no longer used and will be removed in the future.")
+    print("path_prefix was specified to tf_workspace but is no longer used " +
+          "and will be removed in the future.")
   if tf_repo_name:
-    print("tf_repo_name was specified to tf_workspace but is no longer used and will be removed in the future.")
+    print("tf_repo_name was specified to tf_workspace but is no longer used " +
+          "and will be removed in the future.")
 
   native.new_http_archive(
       name = "eigen_archive",
       urls = [
-          "http://bazel-mirror.storage.googleapis.com/bitbucket.org/eigen/eigen/get/9c6361787292.tar.gz",
-          "https://bitbucket.org/eigen/eigen/get/9c6361787292.tar.gz",
+          "http://bazel-mirror.storage.googleapis.com/bitbucket.org/eigen/eigen/get/f3a22f35b044.tar.gz",
+          "https://bitbucket.org/eigen/eigen/get/f3a22f35b044.tar.gz",
       ],
-      sha256 = "e6ec2502a5d82dd5df0b9b16e7697f5fccb81c322d0be8e3492969eecb66badd",
-      strip_prefix = "eigen-eigen-9c6361787292",
+      sha256 = "ca7beac153d4059c02c8fc59816c82d54ea47fe58365e8aded4082ded0b820c4",
+      strip_prefix = "eigen-eigen-f3a22f35b044",
       build_file = str(Label("//third_party:eigen.BUILD")),
   )
 
   native.new_http_archive(
       name = "libxsmm_archive",
       urls = [
-          "http://bazel-mirror.storage.googleapis.com/github.com/hfp/libxsmm/archive/1.7.1.tar.gz",
-          "https://github.com/hfp/libxsmm/archive/1.7.1.tar.gz",
+          "http://bazel-mirror.storage.googleapis.com/github.com/hfp/libxsmm/archive/1.8.tar.gz",
+          "https://github.com/hfp/libxsmm/archive/1.8.tar.gz",
       ],
-      sha256 = "9d3f63ce3eed62f04e4036de6f2be2ce0ff07781ca571af6e0bf85b077edf17a",
-      strip_prefix = "libxsmm-1.7.1",
+      sha256 = "0330201afb5525d0950ec861fec9dd75eb40a03845ebe03d2c635cf8bfc14fea",
+      strip_prefix = "libxsmm-1.8",
       build_file = str(Label("//third_party:libxsmm.BUILD")),
   )
 
@@ -218,6 +311,39 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   )
 
   native.new_http_archive(
+      name = "org_pythonhosted_markdown",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/pypi.python.org/packages/1d/25/3f6d2cb31ec42ca5bd3bfbea99b63892b735d76e26f20dd2dcc34ffe4f0d/Markdown-2.6.8.tar.gz",
+          "https://pypi.python.org/packages/1d/25/3f6d2cb31ec42ca5bd3bfbea99b63892b735d76e26f20dd2dcc34ffe4f0d/Markdown-2.6.8.tar.gz",
+      ],
+      strip_prefix = "Markdown-2.6.8",
+      sha256 = "0ac8a81e658167da95d063a9279c9c1b2699f37c7c4153256a458b3a43860e33",
+      build_file = str(Label("//third_party:markdown.BUILD")),
+  )
+
+  native.new_http_archive(
+      name = "org_html5lib",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/github.com/html5lib/html5lib-python/archive/0.9999999.tar.gz",
+          "https://github.com/html5lib/html5lib-python/archive/0.9999999.tar.gz",  # identical to 1.0b8
+      ],
+      sha256 = "184257f98539159a433e2a2197309657ae1283b4c44dbd9c87b2f02ff36adce8",
+      strip_prefix = "html5lib-python-0.9999999",
+      build_file = str(Label("//third_party:html5lib.BUILD")),
+  )
+
+  native.new_http_archive(
+      name = "org_mozilla_bleach",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/github.com/mozilla/bleach/archive/v1.5.tar.gz",
+          "https://github.com/mozilla/bleach/archive/v1.5.tar.gz",
+      ],
+      strip_prefix = "bleach-1.5",
+      sha256 = "0d68713d02ba4148c417ab1637dd819333d96929a34401d0233947bec0881ad8",
+      build_file = str(Label("//third_party:bleach.BUILD")),
+  )
+
+  native.new_http_archive(
       name = "org_pocoo_werkzeug",
       urls = [
           "http://bazel-mirror.storage.googleapis.com/pypi.python.org/packages/b7/7f/44d3cfe5a12ba002b253f6985a4477edfa66da53787a2a838a40f6415263/Werkzeug-0.11.10.tar.gz",
@@ -233,7 +359,7 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       actual = "@six_archive//:six",
   )
 
-  native.http_archive(
+  patched_http_archive(
       name = "protobuf",
       urls = [
           "http://bazel-mirror.storage.googleapis.com/github.com/google/protobuf/archive/2b7430d96aeff2bb624c8d52182ff5e4b9f7f18a.tar.gz",
@@ -241,6 +367,11 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       ],
       sha256 = "e5d3d4e227a0f7afb8745df049bbd4d55474b158ca5aaa2a0e31099af24be1d0",
       strip_prefix = "protobuf-2b7430d96aeff2bb624c8d52182ff5e4b9f7f18a",
+      # TODO: remove patching when tensorflow stops linking same protos into
+      #       multiple shared libraries loaded in runtime by python.
+      #       This patch fixes a runtime crash when tensorflow is compiled
+      #       with clang -O2 on Linux (see https://github.com/tensorflow/tensorflow/issues/8394)
+      patch_file = str(Label("//third_party/protobuf:add_noinlines.patch")),
   )
 
   # We need to import the protobuf library under the names com_google_protobuf
@@ -287,10 +418,14 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       actual = "@gmock_archive//:gtest_main",
   )
 
-  native.git_repository(
-    name   = "com_github_gflags_gflags",
-    commit = "f8a0efe03aa69b3336d8e228b37d4ccb17324b88",
-    remote = "https://github.com/gflags/gflags.git",
+  native.http_archive(
+      name = "com_github_gflags_gflags",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/github.com/gflags/gflags/archive/f8a0efe03aa69b3336d8e228b37d4ccb17324b88.tar.gz",
+          "https://github.com/gflags/gflags/archive/f8a0efe03aa69b3336d8e228b37d4ccb17324b88.tar.gz",
+      ],
+      sha256 = "4d222fab8f1ede4709cdff417d15a1336f862d7334a81abf76d09c15ecf9acd1",
+      strip_prefix = "gflags-f8a0efe03aa69b3336d8e228b37d4ccb17324b88",
   )
 
   native.bind(
@@ -384,11 +519,11 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
   temp_workaround_http_archive(
       name = "llvm",
       urls = [
-          "http://bazel-mirror.storage.googleapis.com/github.com/llvm-mirror/llvm/archive/5d2b26453d4bca5a13b69b0130e4369d1fcd393d.tar.gz",
-          "https://github.com/llvm-mirror/llvm/archive/5d2b26453d4bca5a13b69b0130e4369d1fcd393d.tar.gz",
+          "http://bazel-mirror.storage.googleapis.com/github.com/llvm-mirror/llvm/archive/13790c8735a78a029dec92d80f5633418d9ffdd6.tar.gz",
+          "https://github.com/llvm-mirror/llvm/archive/13790c8735a78a029dec92d80f5633418d9ffdd6.tar.gz",
       ],
-      sha256 = "3cecf39bf4b3854629d610bb321bb57e0e46bda9110bd51c3bae5a4171c82bab",
-      strip_prefix = "llvm-5d2b26453d4bca5a13b69b0130e4369d1fcd393d",
+      sha256 = "da4fc7147f1e2706977822934d1b245dcb6248930f8089129362ada14f6119dd",
+      strip_prefix = "llvm-13790c8735a78a029dec92d80f5633418d9ffdd6",
       build_file = str(Label("//third_party/llvm:llvm.BUILD")),
       repository = tf_repo_name,
   )
@@ -451,14 +586,36 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       actual = "@zlib_archive//:zlib",
   )
 
+  native.new_http_archive(
+      name = "fft2d",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/www.kurims.kyoto-u.ac.jp/~ooura/fft.tgz",
+          "http://www.kurims.kyoto-u.ac.jp/~ooura/fft.tgz",
+      ],
+      sha256 = "52bb637c70b971958ec79c9c8752b1df5ff0218a4db4510e60826e0cb79b5296",
+      build_file = str(Label("//third_party/fft2d:fft2d.BUILD")),
+  )
+
+  temp_workaround_http_archive(
+      name = "snappy",
+      urls = [
+          "http://bazel-mirror.storage.googleapis.com/github.com/google/snappy/archive/1.1.4.zip",
+          "https://github.com/google/snappy/archive/1.1.4.zip",
+      ],
+      sha256 = "6c74d2b663170d68184da353cdd71b5b7d57bc8888ef1e99b4929b5d680dba54",
+      strip_prefix = "snappy-1.1.4",
+      build_file = str(Label("//third_party:snappy.BUILD")),
+      repository = tf_repo_name,
+  )
+
   temp_workaround_http_archive(
       name = "nccl_archive",
       urls = [
-          "http://bazel-mirror.storage.googleapis.com/github.com/nvidia/nccl/archive/024d1e267845f2ed06f3e2e42476d50f04a00ee6.tar.gz",
-          "https://github.com/nvidia/nccl/archive/024d1e267845f2ed06f3e2e42476d50f04a00ee6.tar.gz",
+          "http://bazel-mirror.storage.googleapis.com/github.com/nvidia/nccl/archive/ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b.tar.gz",
+          "https://github.com/nvidia/nccl/archive/ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b.tar.gz",
       ],
-      sha256 = "6787f0eed88d52ee8e32956fa4947d92c139da469f1d8e311c307f27d641118e",
-      strip_prefix = "nccl-024d1e267845f2ed06f3e2e42476d50f04a00ee6",
+      sha256 = "6c34a0862d9f8ed4ad5984c6a8206b351957bb14cf6ad7822720f285f4aada04",
+      strip_prefix = "nccl-ccfc4567dc3e2a37fb42cfbc64d10eb526e7da7b",
       build_file = str(Label("//third_party:nccl.BUILD")),
       repository = tf_repo_name,
   )
@@ -497,6 +654,17 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       sha256 = "3c8f25c02e806c3ce0ab5fb7da1817f89fc9732709024e2a81b6b82f7cc792a8",
       strip_prefix = "jemalloc-4.4.0",
       build_file = str(Label("//third_party:jemalloc.BUILD")),
+      repository = tf_repo_name,
+  )
+
+  http_files_with_build(
+      name = "pprof_profile_proto",
+      file_urls = {
+          "pprof/profile.proto":
+          ["https://raw.githubusercontent.com/google/pprof/master/proto/profile.proto"],
+          "pprof/LICENSE":
+          ["https://raw.githubusercontent.com/google/pprof/master/LICENSE"]},
+      build_file = str(Label("//third_party:pprof.BUILD")),
       repository = tf_repo_name,
   )
 
@@ -551,13 +719,13 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       name = "com_microsoft_typescript",
       licenses = ["notice"],  # Apache 2.0
       sha256_urls = {
-          "e3d9e320a2cae99be4aaa37953961a48323cdf16ba9aa2557a44d69571cd9b8d": [
-              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/Microsoft/TypeScript/v2.1.6/lib/tsc.js",
-              "https://raw.githubusercontent.com/Microsoft/TypeScript/v2.1.6/lib/tsc.js",
+          "8465342c318f9c4cf0a29b109fa63ee3742dd4dc7080d05d9fd8f604814d04cf": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/Microsoft/TypeScript/v2.3.1/lib/tsc.js",
+              "https://raw.githubusercontent.com/Microsoft/TypeScript/v2.3.1/lib/tsc.js",
           ],
-          "f189cebe96eb76b238c6e364e72d4b0324e699f83eeae5deac23506cb3764fc6": [
-              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/Microsoft/TypeScript/v2.1.6/lib/lib.es6.d.ts",
-              "https://raw.githubusercontent.com/Microsoft/TypeScript/v2.1.6/lib/lib.es6.d.ts",
+          "a67e36da3029d232e4e938e61a0a3302f516d71e7100d54dbf5362ad8618e994": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/Microsoft/TypeScript/v2.3.1/lib/lib.es6.d.ts",
+              "https://raw.githubusercontent.com/Microsoft/TypeScript/v2.3.1/lib/lib.es6.d.ts",
           ],
       },
       extra_build_file_content = "\n".join([
@@ -680,6 +848,27 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       },
   )
 
+  # TODO: Delete previous rule and rename this one org_d3js
+  filegroup_external(
+      name = "org_d3js_v4",
+      # no @license header
+      licenses = ["notice"],  # BSD-3-Clause
+      sha256_urls_extract = {
+          "b5fac5b296bc196e6aa7b59f9e33986fc44d23d59a0e211705187be9e35b943d": [
+              "http://bazel-mirror.storage.googleapis.com/github.com/d3/d3/releases/download/v4.8.0/d3.zip",
+              "https://github.com/d3/d3/releases/download/v4.8.0/d3.zip",
+          ],
+      },
+      # TODO(jart): Use srcs=["d3.js"] instead of this once supported.
+      generated_rule_name = "all_files",
+      extra_build_file_content = "\n".join([
+          "filegroup(",
+          "    name = \"org_d3js_v4\",",
+          "    srcs = [\"d3.js\"],",
+          ")",
+      ]),
+  )
+
   filegroup_external(
       name = "org_definitelytyped",
       licenses = ["notice"],  # MIT
@@ -689,8 +878,8 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
               "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/ebc69904eb78f94030d5d517b42db20867f679c0/chai/chai.d.ts",
           ],
           "177293828c7a206bf2a7f725753d51396d38668311aa37c96445f91bbf8128a7": [
-              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/6e2f2280ef16ef277049d0ce8583af167d586c59/d3/d3.d.ts",
-              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/6e2f2280ef16ef277049d0ce8583af167d586c59/d3/d3.d.ts",
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/6e2f2280ef16ef277049d0ce8583af167d586c59/d3/d3.d.ts",  # v3
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/6e2f2280ef16ef277049d0ce8583af167d586c59/d3/d3.d.ts",  # v3
           ],
           "e4cd3d5de0eb3bc7b1063b50d336764a0ac82a658b39b5cf90511f489ffdee60": [
               "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/efd40e67ff323f7147651bdbef03c03ead7b1675/lodash/lodash.d.ts",
@@ -699,6 +888,322 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
           "695a03dd2ccb238161d97160b239ab841562710e5c4e42886aefd4ace2ce152e": [
               "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/ebc69904eb78f94030d5d517b42db20867f679c0/mocha/mocha.d.ts",
               "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/ebc69904eb78f94030d5d517b42db20867f679c0/mocha/mocha.d.ts",
+          ],
+          "44eba36339bd1c0792072b7b204ee926fe5ffe1e9e2da916e67ac55548e3668a": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/a872802c0c84ba98ff207d5e673a1fa867c67fd6/polymer/polymer.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/a872802c0c84ba98ff207d5e673a1fa867c67fd6/polymer/polymer.d.ts",
+          ],
+          "691756a6eb455f340c9e834de0d49fff269e7b8c1799c2454465dcd6a4435b80": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/46719185c564694c5583c4b7ad94dbb786ecad46/webcomponents.js/webcomponents.js.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/46719185c564694c5583c4b7ad94dbb786ecad46/webcomponents.js/webcomponents.js.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_array",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "61e7abb7b1f01fbcb0cab8cf39003392f422566209edd681fbd070eaa84ca000": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-array/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-array/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_axis",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "95f75c8dcc89850b2e72581d96a7b5f46ea4ac852f828893f141f14a597421f9": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-axis/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-axis/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_brush",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "a2738e693ce8a8640c2d29001e77582c9c361fd23bda44db471629866b60ada7": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-brush/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-brush/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_chord",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "c54d24756eb6d744b31e538ad9bab3a75f6d54e2288b29cc72338d4a057d3e83": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-chord/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-chord/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_collection",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "f987667167b1d2970911247e325eb1c37ca0823646f81ccec837ae59039822f7": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-collection/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-collection/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_color",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "9580c81f38ddcce7be0ac9bd3d0d083adebc34e17441709f90b9e4dcd1c19a56": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-color/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-color/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_dispatch",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "169f80b4cceca8e2e9ed384d81a5db0624cc01a26451dfb5a7e0cec6ea9cfb06": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-dispatch/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-dispatch/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_drag",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "08d35d139dde58c2722be98d718d01204fd6167d310f09b379e832f3c741489d": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-drag/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-drag/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_dsv",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "62594d00cf9e4bb895339c8e56f64330e202a5eb2a0fa580a1f6e6336f2c93ce": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-dsv/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-dsv/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_ease",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "d1cf8f99b7bf758c2ba3c0a4ce553e151d4d9b4cf45a6e8bd0edec7ce90f725b": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-ease/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-ease/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_force",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "288421e2008668d2076a4684657dd3d29b992832ef02c552981eb94a91042553": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-force/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-force/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_format",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "b42cb17e580c1fd0b64d478f7bd80ca806efaefda24426a833cf1f30a7275bca": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-format/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-format/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_hierarchy",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "a5683f5835d8716c6b89c075235078438cfab5897023ed720bfa492e244e969e": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-hierarchy/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-hierarchy/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_interpolate",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "590a71b741323ac3139b333ec8b743e24717fdd5b32bcff48ee521162a9dfe1c": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-interpolate/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-interpolate/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_path",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "96f35ba041bcaa265e2b373ee675177410d44d31c980e4f7fbeefd4bcba15b00": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-path/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-path/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_polygon",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "ce453451e8105cac6a4f4a4263ca2142ebb4bf442e342f470a81da691f220fcb": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-polygon/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-polygon/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_quadtree",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "238e278f1be5d6985a19800800cffee80f81199f71d848e3bbc288d1791a6f90": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-quadtree/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-quadtree/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_queue",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "e6ae19aad83495475653578de64fb9d6bf9764eda6c84d70f7935ec84bcc482e": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-queue/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-queue/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_random",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "d31b92ed86c23ec0a4776f99fa81ff033c95b96c8304d8aa9baf3b94af779aa8": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-random/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-random/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_request",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "44bb7b07d977028e6567540a3303b06fc9b33fb0960bc75c520e0733c840d89f": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-request/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-request/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_scale",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "02ce7c644ba34bd1abb84da2e832f248b048b6a23812be4365bd837f186c9f1f": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-scale/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-scale/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_selection",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "699043ddb28dfa5e46d87bc6a24cfc6d604237f298259d3fb3c7066e05e8c86e": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-selection/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-selection/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_shape",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "62668a7aaaf6232762b544f9f89c0f557ca7cfb0cd343a358dda7ecbe26f5739": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-shape/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-shape/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_time",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "0502490ce682fd9265fb1d5d693ce6cd82e3b05e5f5ee3433731266ecb03d5fc": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-time/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-time/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_timer",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "6f191f9aea704aa64b1defa40dfdff1447a6e6bb815feff1660f894500a9c94d": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-timer/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-timer/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_transition",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "a0a7c0c9bfb5c7d6d9d22a8d16b4484b66d13f2ed226954037546cb3da4098ba": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-transition/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-transition/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_voronoi",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "c6bd5f229f915151d0ef678fe50b1aa6a62334ea0a8c6fc0effbac9f7032efc7": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-voronoi/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-voronoi/index.d.ts",
+          ],
+      },
+  )
+
+  filegroup_external(
+      name = "org_definitelytyped_types_d3_zoom",
+      licenses = ["notice"],  # MIT
+      sha256_urls = {
+          "a25dc17fbd304cf7a0e5e7bbb8339c930d464eb40c4d6e5f839ce9c0191f4110": [
+              "http://bazel-mirror.storage.googleapis.com/raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-zoom/index.d.ts",
+              "https://raw.githubusercontent.com/DefinitelyTyped/DefinitelyTyped/1550dfd1b8e38d9bf104b3fd16ea9bf98a2b358e/types/d3-zoom/index.d.ts",
           ],
       },
   )
@@ -1746,10 +2251,8 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       strip_prefix = "paper-spinner-1.1.1",
       path = "/paper-spinner",
       srcs = [
-          "paper-spinner.html",
-          "paper-spinner-behavior.html",
-          "paper-spinner-lite.html",
-          "paper-spinner-styles.html"
+          "paper-spinner.html", "paper-spinner-behavior.html",
+          "paper-spinner-lite.html", "paper-spinner-styles.html"
       ],
       deps = [
           "@org_polymer",
@@ -1954,9 +2457,7 @@ def tf_workspace(path_prefix = "", tf_repo_name = ""):
       ],
       path = "/promise-polyfill",
       srcs = [
-          "Promise.js",
-          "Promise-Statics.js",
-          "promise-polyfill.html",
+          "Promise.js", "Promise-Statics.js", "promise-polyfill.html",
           "promise-polyfill-lite.html"
       ],
       deps = ["@org_polymer"],

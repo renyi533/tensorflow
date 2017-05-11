@@ -65,10 +65,6 @@ import org.tensorflow.demo.R;
  * Artistic Style" (https://arxiv.org/abs/1610.07629)
  */
 public class StylizeActivity extends CameraActivity implements OnImageAvailableListener {
-  static {
-    System.loadLibrary("tensorflow_demo");
-  }
-
   private static final Logger LOGGER = new Logger();
 
   private static final String MODEL_FILE = "file:///android_asset/stylize_quantized.pb";
@@ -87,7 +83,9 @@ public class StylizeActivity extends CameraActivity implements OnImageAvailableL
 
   private static final boolean DEBUG_MODEL = false;
 
-  private static final int[] SIZES = {32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024};
+  private static final int[] SIZES = {128, 192, 256, 384, 512, 720};
+
+  private static final Size DESIRED_PREVIEW_SIZE = new Size(1280, 720);
 
   // Start at a medium size, but let the user step up through smaller sizes so they don't get
   // immediately stuck processing a large image.
@@ -191,8 +189,8 @@ public class StylizeActivity extends CameraActivity implements OnImageAvailableL
   }
 
   @Override
-  protected int getDesiredPreviewFrameSize() {
-    return SIZES[SIZES.length - 1];
+  protected Size getDesiredPreviewFrameSize() {
+    return DESIRED_PREVIEW_SIZE;
   }
 
   public static Bitmap getBitmapFromAsset(final Context context, final String filePath) {
@@ -299,7 +297,9 @@ public class StylizeActivity extends CameraActivity implements OnImageAvailableL
               setMeasuredDimension(getMeasuredWidth(), getMeasuredWidth());
             }
           };
-      saveButton.setText("Save");
+      saveButton.setText("save");
+      saveButton.setTextSize(12);
+
       saveButton.setOnClickListener(
           new OnClickListener() {
             @Override
@@ -505,17 +505,17 @@ public class StylizeActivity extends CameraActivity implements OnImageAvailableL
       final int yRowStride = planes[0].getRowStride();
       final int uvRowStride = planes[1].getRowStride();
       final int uvPixelStride = planes[1].getPixelStride();
+
       ImageUtils.convertYUV420ToARGB8888(
           yuvBytes[0],
           yuvBytes[1],
           yuvBytes[2],
-          rgbBytes,
           previewWidth,
           previewHeight,
           yRowStride,
           uvRowStride,
           uvPixelStride,
-          false);
+          rgbBytes);
 
       image.close();
     } catch (final Exception e) {

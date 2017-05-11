@@ -39,8 +39,17 @@ class GraphRewriter {
                      const std::unordered_set<const NodeDef*>& nodes_to_delete,
                      NodeDef* new_node);
 
+  // Returns true if at least one of the edges in the direct fanout of 'node' is
+  // a control dependency edge.
+  bool DrivesControlDependency(const NodeDef& node) const;
+
+  // Returns true if at least one of the incident edges is a control dependency
+  // edge.
+  bool IsDrivenByControlDependency(const NodeDef& node) const;
+
  private:
   std::unordered_map<string, const NodeDef*> nodes_;
+  std::unordered_set<const NodeDef*> control_dependency_drivers_;
 };
 
 }  // end namespace grappler
