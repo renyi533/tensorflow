@@ -34,7 +34,7 @@ class AdamOptimizer(optimizer.Optimizer):
   ([pdf](http://arxiv.org/pdf/1412.6980.pdf)).
   """
 
-  def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8,
+  def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8, optimize_sparse=False,
                use_locking=False, name="Adam"):
     """Construct a new Adam optimizer.
 
@@ -87,6 +87,7 @@ class AdamOptimizer(optimizer.Optimizer):
     self._beta1 = beta1
     self._beta2 = beta2
     self._epsilon = epsilon
+    self._optimize_sparse = optimize_sparse
 
     # Tensor versions of the constructor arguments, created in _prepare().
     self._lr_t = None
@@ -154,7 +155,7 @@ class AdamOptimizer(optimizer.Optimizer):
         math_ops.cast(self._epsilon_t, grad.dtype.base_dtype),
         grad, use_locking=self._use_locking)
 
-  def _apply_sparse(self, grad, var):
+  def _apply_sparse_without_opt(self, grad, var):
     beta1_power = math_ops.cast(self._beta1_power, var.dtype.base_dtype)
     beta2_power = math_ops.cast(self._beta2_power, var.dtype.base_dtype)
     lr_t = math_ops.cast(self._lr_t, var.dtype.base_dtype)
@@ -180,6 +181,41 @@ class AdamOptimizer(optimizer.Optimizer):
                                       lr * m_t / (v_sqrt + epsilon_t),
                                       use_locking=self._use_locking)
     return control_flow_ops.group(*[var_update, m_t, v_t])
+
+
+  def _apply_sparse(self, grad, var):
+    if not self._optimize_sparse:
+      return self._apply_sparse_without_opt(grad, var)
+    else:
+      m = self.get_slot(var, "m")
+      v = self.get_slot(var, "v")
+      return training_ops.sparse_apply_adam(
+        var, m, v,
+        math_ops.cast(self._beta1_power, var.dtype.base_dtype),
+        math_ops.cast(self._beta2_power, var.dtype.base_dtype),
+        math_ops.cast(self._lr_t, var.dtype.base_dtype),
+        math_ops.cast(self._beta1_t, var.dtype.base_dtype),
+        math_ops.cast(self._beta2_t, var.dtype.base_dtype),
+        math_ops.cast(self._epsilon_t, var.dtype.base_dtype),
+        grad.values, grad.indices, use_locking=self._use_locking).op
+
+
+  def _resource_apply_sparse(self, grad, handle, indices):
+    if not self._optimize_sparse:
+      raise NotImplementedError()
+    else:
+      m = self.get_slot(var, "m")
+      v = self.get_slot(var, "v")
+      return training_ops.resource_sparse_apply_adam(
+        var.handle, m.handle, v.handle,
+        math_ops.cast(self._beta1_power, grad.dtype.base_dtype),
+        math_ops.cast(self._beta2_power, grad.dtype.base_dtype),
+        math_ops.cast(self._lr_t, grad.dtype.base_dtype),
+        math_ops.cast(self._beta1_t, grad.dtype.base_dtype),
+        math_ops.cast(self._beta2_t, grad.dtype.base_dtype),
+        math_ops.cast(self._epsilon_t, grad.dtype.base_dtype),
+        grad, indices, use_locking=self._use_locking)
+
 
   def _finish(self, update_ops, name_scope):
     # Update the power accumulators.

@@ -2942,4 +2942,161 @@ REGISTER_KERNELS(double, int64);
 
 #undef REGISTER_KERNELS
 
+
+// Note, this op works on cpu only.
+template <typename T, typename Tindex>
+class SparseApplyAdamOp : public OpKernel {
+ public:
+  explicit SparseApplyAdamOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("use_locking", &use_exclusive_lock_));
+  }
+
+  void Compute(OpKernelContext* ctx) override NO_THREAD_SAFETY_ANALYSIS {
+    auto locks = MaybeLockMutexesInOrder(ctx, use_exclusive_lock_,
+                                                      {0, 1, 2});
+
+    Tensor var;
+    OP_REQUIRES_OK(
+        ctx, GetInputTensor(ctx, 0, use_exclusive_lock_, &var));
+    Tensor m;
+    OP_REQUIRES_OK(ctx,
+                   GetInputTensor(ctx, 1, use_exclusive_lock_, &m));
+    Tensor v;
+    OP_REQUIRES_OK(ctx,
+                   GetInputTensor(ctx, 2, use_exclusive_lock_, &v));
+    OP_REQUIRES(
+        ctx, var.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(0)));
+    OP_REQUIRES(
+        ctx, m.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(1)));
+    OP_REQUIRES(
+        ctx, v.IsInitialized(),
+        errors::FailedPrecondition(
+            "Attempting to use uninitialized variables: ", def().input(2)));
+
+    OP_REQUIRES(ctx, var.shape().IsSameSize(m.shape()),
+                errors::InvalidArgument("var and m do not have the same shape",
+                                        var.shape().DebugString(), " ",
+                                        m.shape().DebugString()));
+    OP_REQUIRES(ctx, var.shape().IsSameSize(v.shape()),
+                errors::InvalidArgument("var and v do not have the same shape",
+                                        var.shape().DebugString(), " ",
+                                        v.shape().DebugString()));
+
+    const Tensor& beta1_power = ctx->input(3);
+    const Tensor& beta2_power = ctx->input(4);
+    const Tensor& lr = ctx->input(5);
+    const Tensor& beta1 = ctx->input(6);
+    const Tensor& beta2 = ctx->input(7);
+    const Tensor& epsilon = ctx->input(8);
+
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(beta1_power.shape()),
+                errors::InvalidArgument("beta1_power is not a scalar: ",
+                                        beta1_power.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(beta2_power.shape()),
+                errors::InvalidArgument("beta2_power is not a scalar: ",
+                                        beta2_power.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(lr.shape()),
+                errors::InvalidArgument("lr is not a scalar : ",
+                                        lr.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(beta1.shape()),
+                errors::InvalidArgument("beta1 is not a scalar: ",
+                                        beta1.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(beta2.shape()),
+                errors::InvalidArgument("beta2 is not a scalar: ",
+                                        beta2.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(epsilon.shape()),
+                errors::InvalidArgument("epsilon is not a scalar: ",
+                                        epsilon.shape().DebugString()));
+
+    const Tensor& grad = ctx->input(9);
+    const Tensor& indices = ctx->input(10);
+    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(indices.shape()),
+                errors::InvalidArgument("indices must be one-dimensional"));
+
+    int64 inner_dim = 1;
+    for (int d = 1; d < var.dims(); d++) {
+      OP_REQUIRES(ctx, var.dim_size(d) == grad.dim_size(d),
+                  errors::InvalidArgument(strings::StrCat(
+                      "var and grad must match in dimension ", d)));
+      inner_dim *= grad.dim_size(d);
+    }
+    const Tindex N = indices.dim_size(0);
+    OP_REQUIRES(
+        ctx, grad.dim_size(0) == N,
+        errors::InvalidArgument(
+            "grad must be the same size as indices in the first dimension."));
+
+    OP_REQUIRES(ctx, inner_dim > 0,
+                errors::InvalidArgument(
+                    "Inner dimension should be greater than zero."));
+
+    if (N > 0) {
+      T lr_scalar = lr.scalar<T>()();
+      T beta1_scalar = beta1.scalar<T>()();
+      T beta2_scalar = beta2.scalar<T>()();
+      T beta1_power_scalar = beta1_power.scalar<T>()();
+      T beta2_power_scalar = beta2_power.scalar<T>()();
+      T epsilon_scalar = epsilon.scalar<T>()();
+
+      const T alpha = lr_scalar * Eigen::numext::sqrt(T(1) - beta2_power_scalar) /
+                      (T(1) - beta1_power_scalar);
+       
+      const Tindex first_dim_size = var.dim_size(0);
+      auto indices_vec = indices.vec<Tindex>();
+      auto var_flat = var.flat_outer_dims<T>();
+      auto v_flat = v.flat_outer_dims<T>();
+      auto m_flat = m.flat_outer_dims<T>();
+      auto grad_flat = grad.flat_outer_dims<T>();
+      // Note(yonghui): It might be worth multi-threading square() and
+      // rsqrt().
+      for (Tindex i = 0; i < N; i++) {
+        const Tindex index = internal::SubtleMustCopy(indices_vec(i));
+        OP_REQUIRES(ctx, FastBoundsCheck(index, first_dim_size),
+                    errors::InvalidArgument(
+                        strings::StrCat("Index ", index, " at offset ", i,
+                                        " in indices is out of range")));
+        auto m_c = m_flat.template chip<0>(index);
+        auto v_c = v_flat.template chip<0>(index);
+        auto g = grad_flat.template chip<0>(i);
+        auto variable = var_flat.template chip<0>(index);
+        v_c += (g.square() - v_c) * (T(1) - beta2_scalar);
+        m_c += (g - m_c) * (T(1) - beta1_scalar);
+        variable -= m_c.constant(alpha) * m_c / (v_c.sqrt() + epsilon_scalar);
+      }
+    }
+
+    MaybeForwardRefInputToRefOutput(ctx, 0, 0);
+  }
+
+ private:
+  bool use_exclusive_lock_;
+};
+
+#define REGISTER_KERNELS(T, Tindices)                                \
+  REGISTER_KERNEL_BUILDER(Name("SparseApplyAdam")                 \
+                              .Device(DEVICE_CPU)                    \
+                              .TypeConstraint<T>("T")                \
+                              .TypeConstraint<Tindices>("Tindices"), \
+                          SparseApplyAdamOp<T, Tindices>);        \
+  REGISTER_KERNEL_BUILDER(Name("ResourceSparseApplyAdam")         \
+                              .Device(DEVICE_CPU)                    \
+                              .TypeConstraint<T>("T")                \
+                              .TypeConstraint<Tindices>("Tindices"), \
+                          SparseApplyAdamOp<T, Tindices>);
+#define REGISTER_CPU_KERNELS(T) \
+  REGISTER_KERNELS(T, int32);   \
+  REGISTER_KERNELS(T, int64);
+
+TF_CALL_half(REGISTER_CPU_KERNELS);
+TF_CALL_float(REGISTER_CPU_KERNELS);
+TF_CALL_double(REGISTER_CPU_KERNELS);
+
+#undef REGISTER_CPU_KERNELS
+#undef REGISTER_KERNELS
+
+
 }  // namespace tensorflow
