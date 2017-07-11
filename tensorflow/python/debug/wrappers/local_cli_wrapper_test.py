@@ -21,6 +21,7 @@ import os
 import shutil
 import tempfile
 
+from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
 from tensorflow.python.debug.cli import cli_shared
 from tensorflow.python.debug.cli import debugger_cli_common
@@ -33,6 +34,8 @@ from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
+# Import resource_variable_ops for the variables-to-tensor implicit conversion.
+from tensorflow.python.ops import resource_variable_ops  # pylint: disable=unused-import
 from tensorflow.python.ops import state_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import googletest
@@ -71,14 +74,20 @@ class LocalCLIDebuggerWrapperSessionForTest(
         "tf_errors": [],
         "run_start_cli_run_numbers": [],
         "run_end_cli_run_numbers": [],
+        "profiler_py_graphs": [],
+        "profiler_run_metadata": [],
     }
 
   def _prep_cli_for_run_start(self):
     pass
 
-  def _prep_cli_for_run_end(self, debug_dump, tf_error, passed_filter):
+  def _prep_debug_cli_for_run_end(self, debug_dump, tf_error, passed_filter):
     self.observers["debug_dumps"].append(debug_dump)
     self.observers["tf_errors"].append(tf_error)
+
+  def _prep_profile_cli_for_run_end(self, py_graph, run_metadata):
+    self.observers["profiler_py_graphs"].append(py_graph)
+    self.observers["profiler_run_metadata"].append(run_metadata)
 
   def _launch_cli(self):
     if self._is_run_start:
@@ -308,6 +317,53 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     self.assertEqual(2, len(wrapped_sess.observers["debug_dumps"]))
     self.assertEqual([None, None], wrapped_sess.observers["tf_errors"])
 
+  def testDebuggingMakeCallableTensorRunnerWorks(self):
+    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
+        [[], []], self.sess, dump_root=self._tmp_dir)
+    v = variables.Variable(42)
+    tensor_runner = wrapped_sess.make_callable(v)
+    self.sess.run(v.initializer)
+
+    self.assertAllClose(42, tensor_runner())
+    self.assertEqual(1, len(wrapped_sess.observers["debug_dumps"]))
+
+  def testDebuggingMakeCallableTensorRunnerWithCustomRunOptionsWorks(self):
+    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
+        [[], []], self.sess, dump_root=self._tmp_dir)
+    a = constant_op.constant(42)
+    tensor_runner = wrapped_sess.make_callable(a)
+
+    run_options = config_pb2.RunOptions(
+        trace_level=config_pb2.RunOptions.FULL_TRACE)
+    run_metadata = config_pb2.RunMetadata()
+    self.assertAllClose(
+        42, tensor_runner(options=run_options, run_metadata=run_metadata))
+    self.assertEqual(1, len(wrapped_sess.observers["debug_dumps"]))
+    self.assertGreater(len(run_metadata.step_stats.dev_stats), 0)
+
+  def testDebuggingMakeCallableOperationRunnerWorks(self):
+    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
+        [[], []], self.sess, dump_root=self._tmp_dir)
+    v = variables.Variable(10.0)
+    inc_v = state_ops.assign_add(v, 1.0)
+    op_runner = wrapped_sess.make_callable(inc_v.op)
+    self.sess.run(v.initializer)
+
+    op_runner()
+    self.assertEqual(1, len(wrapped_sess.observers["debug_dumps"]))
+    self.assertEqual(11.0, self.sess.run(v))
+
+  def testDebuggingMakeCallableRunnerWithFeedListWorks(self):
+    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
+        [[], []], self.sess, dump_root=self._tmp_dir)
+    ph1 = array_ops.placeholder(dtypes.float32)
+    ph2 = array_ops.placeholder(dtypes.float32)
+    a = math_ops.add(ph1, ph2)
+    tensor_runner = wrapped_sess.make_callable(a, feed_list=[ph1, ph2])
+
+    self.assertAllClose(42.0, tensor_runner(41.0, 1.0))
+    self.assertEqual(1, len(wrapped_sess.observers["debug_dumps"]))
+
   def testRuntimeErrorShouldBeCaught(self):
     wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
         [[], []], self.sess, dump_root=self._tmp_dir)
@@ -467,6 +523,19 @@ class LocalCLIDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     dumps = wrapped_sess.observers["debug_dumps"][0]
     self.assertEqual(1, dumps.size)
     self.assertEqual("w_int_inner", dumps.dumped_tensor_data[0].node_name)
+
+  def testRunUnderProfilerModeWorks(self):
+    wrapped_sess = LocalCLIDebuggerWrapperSessionForTest(
+        [["-p"], []], self.sess)
+
+    wrapped_sess.run(self.w_int)
+
+    self.assertEqual(1, len(wrapped_sess.observers["profiler_run_metadata"]))
+    self.assertTrue(
+        wrapped_sess.observers["profiler_run_metadata"][0].step_stats)
+    self.assertEqual(1, len(wrapped_sess.observers["profiler_py_graphs"]))
+    self.assertIsInstance(
+        wrapped_sess.observers["profiler_py_graphs"][0], ops.Graph)
 
 
 if __name__ == "__main__":

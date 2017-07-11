@@ -37,8 +37,8 @@ namespace {
 // patterns to match.
 //
 // Each ExprTree node is comprised of an HloOpcode, and a set of operands (each
-// of type ExprTree). Operands can be added by specifing the index and HloOpcode
-// of the operand.
+// of type ExprTree). Operands can be added by specifying the index and
+// HloOpcode of the operand.
 //
 // For example, the following computation:
 //
@@ -168,7 +168,7 @@ class MatcherBase {
   virtual ~MatcherBase() {}
 
   // Attempts to match each ExprTree in 'expr_trees_'.
-  // Returns OK on the first succesful match, error status otherwise.
+  // Returns OK on the first successful match, error status otherwise.
   virtual tensorflow::Status Run() {
     Status status;
     for (const ExprTree& expr_tree : expr_trees_) {
@@ -197,10 +197,9 @@ class MatcherBase {
       return InvalidArgument("Must use S32 or S64 integral types.");
     }
     if (type == S32) {
-      *const_value =
-          static_cast<int64>(LiteralUtil::GetFirstElement<int32>(literal));
+      *const_value = static_cast<int64>(literal.GetFirstElement<int32>());
     } else if (type == S64) {
-      *const_value = LiteralUtil::GetFirstElement<int64>(literal);
+      *const_value = literal.GetFirstElement<int64>();
     }
     return tensorflow::Status::OK();
   }
@@ -240,7 +239,7 @@ class MatcherBase {
 //
 class WhileConditionComputationMatcher : public MatcherBase {
  public:
-  WhileConditionComputationMatcher(const HloComputation* computation)
+  explicit WhileConditionComputationMatcher(const HloComputation* computation)
       : computation_(computation) {
     expr_trees_.emplace_back(BuildCondExprTree());
   }

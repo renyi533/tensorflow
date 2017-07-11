@@ -40,6 +40,7 @@ limitations under the License.
 #include "tensorflow/core/framework/graph_def_util.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/graph_constructor.h"
@@ -200,17 +201,17 @@ Status RewriteAndPruneGraph(Graph* graph, const Config& config,
   for (const Fetch& fetch : config.fetch()) {
     missing_fetches.insert(TensorIdToString(fetch.id()));
   }
-  for (const Node* n : graph->nodes()) {
+  for (const Node* n : graph->op_nodes()) {
     if (n->type_string() == kArgOp) {
       string feed_id;
-      TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), kFeedIdAttr, &feed_id));
+      TF_RETURN_IF_ERROR(GetNodeAttr(n->attrs(), kFeedIdAttr, &feed_id));
       if (missing_feeds.erase(feed_id) == 0) {
         return errors::Aborted(kArgOp,
                                " node found with unknown feed id: ", feed_id);
       }
     } else if (n->type_string() == kRetvalOp) {
       string fetch_id;
-      TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), kFetchIdAttr, &fetch_id));
+      TF_RETURN_IF_ERROR(GetNodeAttr(n->attrs(), kFetchIdAttr, &fetch_id));
       if (missing_fetches.erase(fetch_id) == 0) {
         return errors::Aborted(kRetvalOp,
                                " node found with unknown fetch id: ", fetch_id);
@@ -234,7 +235,7 @@ Status CollectArgNodes(const Graph& graph, std::vector<Node*>* arg_nodes) {
   for (Node* n : graph.nodes()) {
     if (n->type_string() == kArgOp) {
       int index;
-      TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), "index", &index));
+      TF_RETURN_IF_ERROR(GetNodeAttr(n->attrs(), "index", &index));
       auto insert_result = indexed_arg_nodes.insert({index, n});
       if (!insert_result.second) {
         const Node* dup = insert_result.first->second;
@@ -264,9 +265,9 @@ Status CreateXlaArgs(const Graph& graph,
   for (const Node* node : arg_nodes) {
     XlaCompiler::Argument arg;
     arg.kind = XlaCompiler::Argument::kParameter;
-    TF_RETURN_IF_ERROR(GetNodeAttr(node->def(), "T", &arg.type));
-    TF_RETURN_IF_ERROR(GetNodeAttr(node->def(), kShapeAttr, &arg.shape));
-    TF_RETURN_IF_ERROR(GetNodeAttr(node->def(), kDebugNameAttr, &arg.name));
+    TF_RETURN_IF_ERROR(GetNodeAttr(node->attrs(), "T", &arg.type));
+    TF_RETURN_IF_ERROR(GetNodeAttr(node->attrs(), kShapeAttr, &arg.shape));
+    TF_RETURN_IF_ERROR(GetNodeAttr(node->attrs(), kDebugNameAttr, &arg.name));
     xla_args->push_back(arg);
   }
   return Status::OK();
@@ -289,18 +290,19 @@ Status ConvertGraphToXla(xla::CompileOnlyClient* client,
   // Compile the graph into an XLA computation.
   XlaCompiler::Options compiler_options;
   compiler_options.client = client;
-  compiler_options.device_type = DeviceType(DEVICE_CPU_XLA_JIT);
+  DeviceType device_type(DEVICE_CPU_XLA_JIT);
+  compiler_options.device_type = &device_type;
+  compiler_options.flib_def = &graph->flib_def();
+  compiler_options.graph_def_version = graph->versions().producer();
   compiler_options.allow_cpu_custom_calls = true;
   XlaCompiler compiler(compiler_options);
 
-  std::unique_ptr<FunctionLibraryRuntime> flib_run(NewFunctionLibraryRuntime(
-      compiler.device_mgr(), Env::Default(), compiler.device(),
-      graph->versions().producer(), &graph->flib_def(), OptimizerOptions()));
   XlaCompiler::CompilationResult result;
-  TF_RETURN_IF_ERROR(compiler.CompileGraph("tfcompile", std::move(graph),
-                                           flib_run.get(), xla_args, &result));
+  TF_RETURN_IF_ERROR(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                           "tfcompile", std::move(graph),
+                                           xla_args, &result));
   *has_context_arg = result.requires_runtime_context;
-  *computation = std::move(result.computation);
+  *computation = std::move(*result.computation);
 
   int num_const_results = 0;
   for (int i = 0; i < result.outputs.size(); ++i) {
@@ -349,6 +351,7 @@ Status CompileXla(xla::CompileOnlyClient* client,
   compile_result->program_shape = *pshape_or.ValueOrDie();
   xla::ProgramShape* pshape = &compile_result->program_shape;
   std::vector<const xla::Shape*> arg_layouts;
+  arg_layouts.reserve(pshape->parameters_size());
   for (int i = 0; i < pshape->parameters_size(); ++i) {
     arg_layouts.push_back(pshape->mutable_parameters(i));
   }
@@ -376,9 +379,16 @@ Status CompileXla(xla::CompileOnlyClient* client,
 Status InitGraph(const GraphDef& graph_def, const Config& config,
                  const MainFlags& flags, std::unique_ptr<Graph>* graph) {
   TF_RETURN_IF_ERROR(ValidateConfig(config));
+
   FunctionLibraryDefinition flib_def(OpRegistry::Global(), graph_def.library());
   std::unique_ptr<Graph> g(new Graph(flib_def));
-  GraphDef copy_def(graph_def);
+
+  GraphDef copy_def;
+
+  // Prune the GraphDef first so that unknown ops that we aren't compiling get
+  // filtered out.
+  TF_RETURN_IF_ERROR(PruneGraphDefInto(config, graph_def, &copy_def));
+
   TF_RETURN_IF_ERROR(AddDefaultAttrsToGraphDef(&copy_def, *g->op_registry(),
                                                0 /*node_offset*/));
   TF_RETURN_IF_ERROR(

@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/tensor.h"
 
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/strings/strcat.h"
@@ -203,14 +204,15 @@ TEST(Tensor_QInt32, Simple) {
 }
 
 class TensorReshapeTest : public ::testing::Test {
-protected:
+ protected:
   Tensor t;
   Tensor zero_t;
 
-  TensorReshapeTest() : t(DT_FLOAT, TensorShape({2, 3, 4, 5})),
-      zero_t(DT_FLOAT, TensorShape({3, 0, 2, 0, 5})) {}
+  TensorReshapeTest()
+      : t(DT_FLOAT, TensorShape({2, 3, 4, 5})),
+        zero_t(DT_FLOAT, TensorShape({3, 0, 2, 0, 5})) {}
 
-  virtual void SetUp() {
+  void SetUp() override {
     EXPECT_TRUE(t.shape().IsSameSize(TensorShape({2, 3, 4, 5})));
     EXPECT_TRUE(zero_t.shape().IsSameSize(TensorShape({3, 0, 2, 0, 5})));
 
@@ -224,7 +226,6 @@ protected:
     tensor(0, 0, 0, 0) = 0.01f;
     tensor(1, 2, 3, 4) = 0.02f;
   }
-
 };
 
 TEST_F(TensorReshapeTest, Reshape) {
@@ -820,15 +821,13 @@ namespace {
 // failures to allocate.
 class DummyCPUAllocator : public Allocator {
  public:
-  DummyCPUAllocator() {}
+  DummyCPUAllocator() = default;
   string Name() override { return "cpu"; }
   void* AllocateRaw(size_t alignment, size_t num_bytes) override {
     return nullptr;
   }
-  void DeallocateRaw(void* ptr) override { return; }
+  void DeallocateRaw(void* ptr) override {}
 };
-
-}  // namespace
 
 TEST(Tensor, FailureToAllocate) {
   TensorShape shape({1});
@@ -959,7 +958,8 @@ TEST(Tensor, Slice_Basic) {
 
 namespace {
 template <typename T>
-Tensor MkTensor(DataType dt, TensorShape shape, std::vector<T> init_values) {
+Tensor MkTensor(DataType dt, const TensorShape& shape,
+                std::vector<T> init_values) {
   Tensor x(dt, shape);
   const int limit = x.NumElements();
   int vi = 0;
@@ -1079,4 +1079,5 @@ static void BM_CreateAndMoveCtrWithBuf(int iters) {
 }
 BENCHMARK(BM_CreateAndMoveCtrWithBuf);
 
+}  // namespace
 }  // namespace tensorflow

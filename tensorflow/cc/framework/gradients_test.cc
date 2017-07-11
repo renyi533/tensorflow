@@ -17,6 +17,7 @@ limitations under the License.
 #include "tensorflow/cc/framework/grad_op_registry.h"
 #include "tensorflow/cc/framework/testutil.h"
 #include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -260,7 +261,7 @@ TEST_F(GradientsTest, StackUnstack_StopBackprop) {
 }
 
 TEST_F(GradientsTest, DependentGradOutputs) {
-  // Tests that dependant gradients (in this case the gradients w.r.t to the
+  // Tests that dependent gradients (in this case the gradients w.r.t to the
   // output and one input of MatMul) are computed properly.
 
   // Create two chained MatMul ops.

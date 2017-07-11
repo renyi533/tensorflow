@@ -178,7 +178,7 @@ tensorflow`).  Run the following command to compile TensorFlow and generate the
 documentation in the `/tmp/tfdocs` dir:
 
     bazel run tools/docs:generate -- \
-              --src_dir=`pwd`/tensorflow/docs_src/ \
+              --src_dir="$(pwd)/docs_src/" \
               --output_dir=/tmp/tfdocs/
 
 Note: You must set `src_dir` and `output_dir` to absolute file paths.
@@ -276,7 +276,7 @@ __init__.py:
     # Otherwise import symbols directly
     from tensorflow.some_module.some_other_file import some_symbol
 
-    from tensorflow.platform.all_util import remove_undocumented
+    from tensorflow.python.util.all_util import remove_undocumented
 
     _allowed_symbols = [‘some_symbol’, ‘some_other_symbol’]
 

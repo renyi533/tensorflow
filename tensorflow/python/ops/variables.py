@@ -24,6 +24,7 @@ from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.util import compat
@@ -32,8 +33,7 @@ from tensorflow.python.util.deprecation import deprecated
 
 
 class Variable(object):
-  """See the @{$variables$Variables How To} for a high
-  level overview.
+  """See the @{$variables$Variables How To} for a high level overview.
 
   A variable maintains state in the graph across calls to `run()`. You add a
   variable to the graph by constructing an instance of the class `Variable`.
@@ -281,11 +281,20 @@ class Variable(object):
                 shape,
                 self._initial_value.dtype.base_dtype,
                 name=name)
+          # pylint: enable=protected-access
 
         # Or get the initial value from a Tensor or Python object.
         else:
           self._initial_value = ops.convert_to_tensor(
               initial_value, name="initial_value", dtype=dtype)
+          # pylint: disable=protected-access
+          if self._initial_value.op._get_control_flow_context() is not None:
+            raise ValueError(
+                "Initializer for variable %s is from inside a control-flow "
+                "construct, such as a loop or conditional. When creating a "
+                "variable inside a loop or conditional, use a lambda as the "
+                "initializer." % name)
+          # pylint: enable=protected-access
           shape = (self._initial_value.get_shape()
                    if validate_shape else tensor_shape.unknown_shape())
           # In this case, the variable op can't be created until after the
@@ -568,6 +577,29 @@ class Variable(object):
         sparse_delta.indices,
         sparse_delta.values,
         use_locking=use_locking)
+
+  def _strided_slice_assign(self,
+                            begin,
+                            end,
+                            strides,
+                            value,
+                            name,
+                            begin_mask,
+                            end_mask,
+                            ellipsis_mask,
+                            new_axis_mask,
+                            shrink_axis_mask):
+    return gen_array_ops.strided_slice_assign(ref=self._ref(),
+                                              begin=begin,
+                                              end=end,
+                                              strides=strides,
+                                              value=value,
+                                              name=name,
+                                              begin_mask=begin_mask,
+                                              end_mask=end_mask,
+                                              ellipsis_mask=ellipsis_mask,
+                                              new_axis_mask=new_axis_mask,
+                                              shrink_axis_mask=shrink_axis_mask)
 
   def count_up_to(self, limit):
     """Increments this variable until it reaches `limit`.
@@ -1163,7 +1195,7 @@ def initialize_variables(var_list, name="init"):
 def global_variables_initializer():
   """Returns an Op that initializes global variables.
 
-  This is just a shortcut for `variable_initializer(global_variables())`
+  This is just a shortcut for `variables_initializer(global_variables())`
 
   Returns:
     An Op that initializes global variables in the graph.
@@ -1181,7 +1213,7 @@ def initialize_all_variables():
 def local_variables_initializer():
   """Returns an Op that initializes all local variables.
 
-  This is just a shortcut for `variable_initializer(local_variables())`
+  This is just a shortcut for `variables_initializer(local_variables())`
 
   Returns:
     An Op that initializes all local variables in the graph.
@@ -1278,23 +1310,25 @@ def report_uninitialized_variables(var_list=None,
         if op.type in ["Variable", "VariableV2", "AutoReloadVariable"]:
           var_list.append(op.outputs[0])
   with ops.name_scope(name):
-    if not var_list:
-      # Return an empty tensor so we only need to check for returned tensor
-      # size being 0 as an indication of model ready.
-      return array_ops.constant([], dtype=dtypes.string)
-    else:
-      # Get a 1-D boolean tensor listing whether each variable is initialized.
-      variables_mask = math_ops.logical_not(
-          array_ops.stack(
-              [state_ops.is_variable_initialized(v) for v in var_list]))
-      # Get a 1-D string tensor containing all the variable names.
-      variable_names_tensor = array_ops.constant([s.op.name for s in var_list])
-      # Return a 1-D tensor containing all the names of uninitialized variables.
-      return array_ops.boolean_mask(variable_names_tensor, variables_mask)
+    # Run all operations on CPU
+    with ops.device("/cpu:0"):
+      if not var_list:
+        # Return an empty tensor so we only need to check for returned tensor
+        # size being 0 as an indication of model ready.
+        return array_ops.constant([], dtype=dtypes.string)
+      else:
+        # Get a 1-D boolean tensor listing whether each variable is initialized.
+        variables_mask = math_ops.logical_not(
+            array_ops.stack(
+                [state_ops.is_variable_initialized(v) for v in var_list]))
+        # Get a 1-D string tensor containing all the variable names.
+        variable_names_tensor = array_ops.constant(
+            [s.op.name for s in var_list])
+        # Return a 1-D tensor containing all the names of
+        # uninitialized variables.
+        return array_ops.boolean_mask(variable_names_tensor, variables_mask)
 
 # pylint: disable=protected-access
-ops.register_tensor_conversion_function(Variable,
-                                        Variable._TensorConversionFunction)
 Variable._OverloadAllOperators()
 
 ops.register_tensor_conversion_function(

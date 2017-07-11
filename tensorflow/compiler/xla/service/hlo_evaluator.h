@@ -35,13 +35,21 @@ namespace xla {
 // This class is not thread-safe.
 class HloEvaluator : public DfsHloVisitorWithDefault {
  public:
-  HloEvaluator() {}
-  ~HloEvaluator() override {}
-
+  HloEvaluator();
   // Evaluates a HLO computation and an array of pointers to literals.
   // Return the evaluated result as literal if successful.
-  // Precondition: argument literals are in post-order corresponding to the
-  // input instruction's parameters.
+  // Precondition: argument literals are corresponds to the input computation's
+  // parameters in their post-ordering. For e.g., consider the following graph:
+  //
+  //                *
+  //            /       \
+  //            +     Parameter1
+  //        /      \
+  //       /        \
+  //    Parameter0  Constant
+  //
+  // The input literals array will have its first literal map to Parameter0 and
+  // the second map to Parameter1.
   StatusOr<std::unique_ptr<Literal>> Evaluate(
       HloComputation* computation,
       tensorflow::gtl::ArraySlice<const Literal*> arg_literals);
@@ -49,52 +57,95 @@ class HloEvaluator : public DfsHloVisitorWithDefault {
   // Evaluates a single HLO instruction and an array of pointers to literals.
   // Return the evaluated result as literal if successful.
   // Precondition:
-  // 1. argument literals are in post-order corresponding to the input
-  // instruction's parameters.
+  // 1. argument literals correspond to the input instruction's parameters in
+  // their post-ordering.
   // 2. the instruction's operands must be of either Parameter or Constant type.
   // TODO(b/35950897): implement more ops other than element-wise ops.
-  // TODO(b/35950897): handle broadcasts.
   StatusOr<std::unique_ptr<Literal>> Evaluate(
       HloInstruction* instruction,
       tensorflow::gtl::ArraySlice<const Literal*> arg_literals);
 
- protected:
-  // The following methods implement the DfsHloVisitor interface.
-  //
-  // DefaultAction here handles all non-specificialized (i.e., instruction
-  // without corresponding Handle* method) instructions.
-  // TODO(b/35950897): it's likely better to refactor the switches here and push
-  // up the switch to templated methods instead, likely at DfsHloVisitor level.
-  Status DefaultAction(HloInstruction* hlo_instruction) override;
+  // Evaluates a single HLO instruction with constant operands.
+  // Returns the evaluated result as literal if successful.
+  // Precondition:
+  // 1. all operands of the input instruction are constants.
+  // 2. the instruction is not a Parameter operation.
+  StatusOr<std::unique_ptr<Literal>> Evaluate(HloInstruction* instruction);
 
+  // Same as Evaluate, except returning nullptr on error.
+  std::unique_ptr<Literal> TryEvaluate(HloInstruction* instruction);
+
+ protected:
+  // Templated DfsHloVisitor. Typically ReturnT here indicates the resulting
+  // literal type of each evaluated Handle* method of a TypedVisitor.
+  // There are however a few notable exceptions to this is rule, notably:
+  // - HandleCompare and HandleIsFinite: where the resulting literal type is
+  // always boolean.
+  // These operations are handled outside of the parent HloEvaluator handlers
+  // instead of from within TypedVisitor.
+  template <typename ReturnT>
+  class TypedVisitor;
+
+  // Wraps around instruction handling to infer types before dispatching to
+  // the corresponding typed Visitor.
+  Status DefaultAction(HloInstruction* hlo) override {
+    return hlo->Visit(typed_visitors_.at(hlo->shape().element_type()).get());
+  }
+
+  // Operations that are type-agnostic or always return a specific type, such as
+  // HandleIsFinite where boolean is always returned.
+  //
   Status HandleParameter(HloInstruction* parameter) override;
+
   Status HandleConstant(HloInstruction* constant,
                         const Literal& literal) override;
 
+  Status HandleConcatenate(
+      HloInstruction* concatenate,
+      tensorflow::gtl::ArraySlice<HloInstruction*> operands) override;
+
+  Status HandleReshape(HloInstruction* reshape) override;
+
+  Status HandleSlice(HloInstruction* slice, HloInstruction* operand) override;
+
+  Status HandleTranspose(HloInstruction* transpose) override;
+
+  Status HandleIsFinite(HloInstruction* is_finite,
+                        HloInstruction* operand) override;
+
+  Status HandleCompare(HloInstruction* compare, HloOpcode opcode,
+                       HloInstruction* lhs, HloInstruction* rhs) override;
+
  private:
-  // Evaluates a single HLO instruction return the result as a Literal if
-  // successful. A Status will be returned on error.
-  StatusOr<std::unique_ptr<Literal>> EvaluateBasedOnType(
-      HloInstruction* instruction);
-
-  // Evaluates an element-wise HLO instruction that has the same output literal
-  // type as the operands' types.
-  template <typename NativeT>
-  StatusOr<std::unique_ptr<Literal>> EvaluateSameTypedElementwise(
-      HloInstruction* instruction);
-
   // Returns the already-evaluated literal result for the instruction.
+  // A Constant instruction is considered evaluated and its literal will be
+  // returned directly without looking up the cache.
   // Crash with log if the given instruction has not been evaluated previously.
   const Literal& GetEvaluatedLiteralFor(const HloInstruction* hlo) {
+    if (hlo->IsConstant()) {
+      return hlo->literal();
+    }
     auto it = evaluated_.find(hlo);
     CHECK(it != evaluated_.end())
         << "could not find evaluated value for: " << hlo->ToString();
     return *(it->second);
   }
 
-  // Tracks the HLO instruciton and its evaluated literal result.
+  // Map from a primitive type to its associated (templated) DfsHloVisitor.
+  // Note: the hash function here is only needed because current gcc std::hash
+  // does not specialize for enum types. This should however be fixed in the
+  // future: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=60970#c5
+  tensorflow::gtl::FlatMap<PrimitiveType, std::unique_ptr<DfsHloVisitor>,
+                           std::hash<int>>
+      typed_visitors_;
+
+  // Tracks the HLO instruction and its evaluated literal result.
+  // TODO(b/35950897): have better memory management here to free instructions
+  // that are no longer a parent for any other subsequent instruction in
+  // post-orderring.
   tensorflow::gtl::FlatMap<const HloInstruction*, std::unique_ptr<Literal>>
       evaluated_;
+
   // Stores input literals, assuming they are in post-order. Literals are not
   // owned by this class, and they must outlive the lifetime of the instance of
   // this class.

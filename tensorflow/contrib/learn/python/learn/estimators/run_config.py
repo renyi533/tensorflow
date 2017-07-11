@@ -19,7 +19,6 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
-import copy
 import json
 import os
 
@@ -32,6 +31,9 @@ from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training import server_lib
 
 
+# A list of the property names in RunConfig user allows to change. They will
+# not affect the execution framework, so when execution framework checks the
+# `uid` of the RunConfig, it should be ingored.
 _DEFAULT_UID_WHITE_LIST = [
     'tf_random_seed',
     'save_summary_steps',
@@ -40,6 +42,7 @@ _DEFAULT_UID_WHITE_LIST = [
     'session_config',
     'keep_checkpoint_max',
     'keep_checkpoint_every_n_hours',
+    'log_step_count_steps',
 ]
 
 
@@ -228,6 +231,7 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
                save_checkpoints_steps=None,
                keep_checkpoint_max=5,
                keep_checkpoint_every_n_hours=10000,
+               log_step_count_steps=100,
                evaluation_master='',
                model_dir=None,
                session_config=None):
@@ -259,6 +263,8 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
       keep_checkpoint_every_n_hours: Number of hours between each checkpoint
         to be saved. The default value of 10,000 hours effectively disables
         the feature.
+      log_step_count_steps: The frequency, in number of global steps, that the
+        global step/sec will be logged during training.
       evaluation_master: the master on which to perform evaluation.
       model_dir: directory where model parameters, graph etc are saved. If
         `None`, will use `model_dir` property in `TF_CONFIG` environment
@@ -282,6 +288,7 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
     self._tf_random_seed = tf_random_seed
     self._save_summary_steps = save_summary_steps
     self._save_checkpoints_secs = save_checkpoints_secs
+    self._log_step_count_steps = log_step_count_steps
     self._session_config = session_config
     if save_checkpoints_secs == RunConfig._USE_DEFAULT:
       if save_checkpoints_steps is None:
@@ -296,35 +303,6 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
     self._keep_checkpoint_every_n_hours = keep_checkpoint_every_n_hours
     self._model_dir = _get_model_dir(model_dir)
 
-  def replace(self, **kwargs):
-    """Returns a new instance of `RunConfig` replacing specified properties.
-
-    Only the properties in the following list are allowed to be replaced:
-      - `model_dir`.
-
-    Args:
-      **kwargs: keyword named properties with new values.
-
-    Raises:
-      ValueError: If any property name in `kwargs` does not exist or is not
-        allowed to be replaced.
-
-    Returns:
-      a new instance of `RunConfig`.
-    """
-
-    new_copy = copy.deepcopy(self)
-
-    # TODO(b/33295821): Allow more fields to be replaced.
-    for key, new_value in six.iteritems(kwargs):
-      if key == 'model_dir':
-        new_copy._model_dir = new_value  # pylint: disable=protected-access
-        continue
-
-      raise ValueError('{} is not supported by RunConfig replace'.format(key))
-
-    return new_copy
-
   @experimental
   def uid(self, whitelist=None):
     """Generates a 'Unique Identifier' based on all internal fields.
@@ -336,7 +314,7 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
     Args:
       whitelist: A list of the string names of the properties uid should not
         include. If `None`, defaults to `_DEFAULT_UID_WHITE_LIST`, which
-        includes most properites user allowes to change.
+        includes most properties user allowes to change.
 
     Returns:
       A uid string.
@@ -393,6 +371,10 @@ class RunConfig(ClusterConfig, core_run_config.RunConfig):
   @property
   def keep_checkpoint_every_n_hours(self):
     return self._keep_checkpoint_every_n_hours
+
+  @property
+  def log_step_count_steps(self):
+    return self._log_step_count_steps
 
 
 def _count_ps(cluster_spec):

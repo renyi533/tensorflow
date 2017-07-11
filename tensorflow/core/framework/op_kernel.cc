@@ -16,16 +16,20 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/framework/attr_value_util.h"
+#include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/framework/graph.pb_text.h"
 #include "tensorflow/core/framework/kernel_def.pb_text.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/memory_types.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_def_util.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
@@ -75,7 +79,7 @@ Status MatchSignatureHelper(const DataTypeSlice expected_inputs,
 // OpKernel ------------------------------------------------------------------
 
 OpKernel::OpKernel(OpKernelConstruction* context)
-    : def_(context->def()),
+    : def_(new NodeDef(context->def())),
       input_types_(context->input_types().begin(),
                    context->input_types().end()),
       input_memory_types_(context->input_memory_types().begin(),
@@ -89,17 +93,22 @@ OpKernel::OpKernel(OpKernelConstruction* context)
       input_name_map_(context->num_inputs()),
       output_name_map_(context->num_outputs()) {
   OP_REQUIRES_OK(context,
-                 NameRangesForNode(def_, context->op_def(), &input_name_map_,
+                 NameRangesForNode(*def_, *context->op_def_, &input_name_map_,
                                    &output_name_map_));
-  OP_REQUIRES_OK(context, CheckOpDeprecation(context->op_def(),
+  OP_REQUIRES_OK(context, CheckOpDeprecation(*context->op_def_,
                                              context->graph_def_version()));
 
-  // Kernels executing on GPU tie very few resources on the CPU where the
+  // Kernels executing on GPU/SYCL tie very few resources on the CPU where the
   // scheduler runs: we consider them as inexpensive.
-  expensive_ = context->device_type() != DeviceType(DEVICE_GPU);
+  expensive_ = context->device_type() != DeviceType(DEVICE_GPU) && context->device_type() != DeviceType(DEVICE_SYCL);
 }
 
 OpKernel::~OpKernel() {}
+
+const string& OpKernel::name() const { return def_->name(); }
+const string& OpKernel::type_string() const { return def_->op(); }
+const string& OpKernel::requested_device() const { return def_->device(); }
+const string& OpKernel::requested_input(int i) const { return def_->input(i); }
 
 Status OpKernel::InputRange(StringPiece input_name, int* start,
                             int* stop) const {
@@ -162,6 +171,26 @@ Tensor* PersistentTensor::AccessTensor(OpKernelContext* context) {
 }
 
 // OpKernelConstruction ------------------------------------------------------
+
+OpKernelConstruction::OpKernelConstruction(
+    DeviceType device_type, DeviceBase* device, Allocator* allocator,
+    const NodeDef* node_def, const OpDef* op_def, FunctionLibraryRuntime* flib,
+    const DataTypeSlice& input_types, const MemoryTypeSlice& input_memory_types,
+    const DataTypeSlice& output_types,
+    const MemoryTypeSlice& output_memory_types, int graph_def_version,
+    Status* status)
+    : device_type_(std::move(device_type)),
+      device_(device),
+      allocator_(allocator),
+      def_(node_def),
+      op_def_(op_def),
+      flib_(flib),
+      input_types_(input_types),
+      input_memory_types_(input_memory_types),
+      output_types_(output_types),
+      output_memory_types_(output_memory_types),
+      graph_def_version_(graph_def_version),
+      status_(status) {}
 
 void OpKernelConstruction::SetStatus(const Status& status) {
   status_->Update(status);
@@ -807,7 +836,7 @@ static KernelRegistry* GlobalKernelRegistryTyped() {
   return reinterpret_cast<KernelRegistry*>(GlobalKernelRegistry());
 }
 
-static string Key(StringPiece op_type, DeviceType device_type,
+static string Key(StringPiece op_type, const DeviceType& device_type,
                   StringPiece label) {
   return strings::StrCat(op_type, ":", DeviceTypeString(device_type), ":",
                          label);
@@ -841,13 +870,10 @@ bool InTypeList(DataType dt, const AttrValue& type_list) {
   return false;
 }
 
-// Returns whether the attrs in the NodeDef satisfy the constraints in
-// the kernel_def.  Returns an error if attrs in kernel_def are not
-// found, or have a mismatching type.
-Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
-                  bool* match) {
+// Returns whether the attrs satisfy the constraints in the kernel_def.  Returns
+// an error if attrs in kernel_def are not found, or have a mismatching type.
+Status AttrsMatch(AttrSlice attrs, const KernelDef& kernel_def, bool* match) {
   *match = false;
-  AttrSlice attrs(node_def);
   for (const auto& constraint : kernel_def.constraint()) {
     if (constraint.allowed_values().list().type_size() == 0) {
       return errors::Unimplemented(
@@ -871,7 +897,7 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
               "' that has value '", SummarizeAttrValue(*found),
               "' that does not have type 'type' or 'list(type)' in NodeDef "
               "'",
-              SummarizeNodeDef(node_def), "'");
+              attrs.SummarizeNode(), "'");
         }
 
         for (int t : found->list().type()) {
@@ -884,7 +910,7 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
     } else {
       return errors::InvalidArgument(
           "OpKernel '", kernel_def.op(), "' has constraint on attr '",
-          constraint.name(), "' not in NodeDef '", SummarizeNodeDef(node_def),
+          constraint.name(), "' not in NodeDef '", attrs.SummarizeNode(),
           "', KernelDef: '", ProtoShortDebugString(kernel_def), "'");
     }
   }
@@ -892,13 +918,18 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
   return Status::OK();
 }
 
-Status FindKernelRegistration(DeviceType device_type, const NodeDef& node_def,
+static const StringPiece kKernelAttr("_kernel");
+
+// TODO(irving): Replace with const Node& version below.
+Status FindKernelRegistration(const DeviceType& device_type,
+                              const NodeDef& node_def,
                               const KernelRegistration** reg,
                               bool* was_attr_mismatch) {
   *reg = nullptr;
   *was_attr_mismatch = false;
-  string label;  // Label defaults to empty if not found in NodeDef.
-  GetNodeAttr(node_def, "_kernel", &label).IgnoreError();
+  // Label defaults to empty if not found in NodeDef.
+  const string& label = GetNodeAttrString(node_def, kKernelAttr);
+
   const string key = Key(node_def.op(), device_type, label);
   auto regs = GlobalKernelRegistryTyped()->equal_range(key);
   for (auto iter = regs.first; iter != regs.second; ++iter) {
@@ -922,9 +953,17 @@ Status FindKernelRegistration(DeviceType device_type, const NodeDef& node_def,
   return Status::OK();
 }
 
+Status FindKernelRegistration(const DeviceType& device_type, const Node& node,
+                              const KernelRegistration** reg,
+                              bool* was_attr_mismatch) {
+  return FindKernelRegistration(device_type, node.def(), reg,
+                                was_attr_mismatch);
+}
+
 }  // namespace
 
-Status FindKernelDef(DeviceType device_type, const NodeDef& node_def,
+// TODO(irving): Change const NodeDef& to const Node&
+Status FindKernelDef(const DeviceType& device_type, const NodeDef& node_def,
                      const KernelDef** def, string* kernel_class_name) {
   const KernelRegistration* reg = nullptr;
   bool was_attr_mismatch;
@@ -1006,8 +1045,8 @@ std::unique_ptr<OpKernel> CreateOpKernel(
     DeviceType device_type, DeviceBase* device, Allocator* allocator,
     const NodeDef& node_def, int graph_def_version, Status* status) {
   OpKernel* kernel = nullptr;
-  *status = CreateOpKernel(device_type, device, allocator, nullptr, node_def,
-                           graph_def_version, &kernel);
+  *status = CreateOpKernel(std::move(device_type), device, allocator, nullptr,
+                           node_def, graph_def_version, &kernel);
   return std::unique_ptr<OpKernel>(kernel);
 }
 
