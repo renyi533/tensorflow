@@ -141,6 +141,11 @@ bool AttrSlice::EqualAttrs(AttrSlice other, Scratch* scratch) const {
   if (size() != other.size()) return false;
 
   for (const auto& attr : *other.attrs_) {
+    if (attr.first.substr(0, 6) == "_class")
+    {
+      VLOG(1) << "CSE: ignored attr to compare:"<<attr.first;
+      continue;
+    }
     auto iter = attrs_->find(attr.first);
     if (iter == attrs_->end()) return false;
     // TODO(irving): Comparing AttrValues by proto is slightly buggy, since

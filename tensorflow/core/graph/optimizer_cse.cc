@@ -111,6 +111,10 @@ size_t OptimizerCSE::NodeHash(const Node* n) {
   string tmp;
   for (const auto& attr : n->attrs()) {
     tmp = attr.first;
+    if (tmp.substr(0, 6) == "_class") {
+      VLOG(1) << "CSE: node name:" << n->name() <<", ignored attr to hash:"<<tmp;
+      continue;
+    }
     attr.second.AppendToString(&tmp);
     // Add hashes of attrs, so the order of attrs doesn't matter.
     h += Hash32(tmp.data(), tmp.size(), 0x87341245);
