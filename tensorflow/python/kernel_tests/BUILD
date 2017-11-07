@@ -420,7 +420,7 @@ tf_py_test(
 
 tf_py_test(
     name = "record_input_test",
-    size = "small",
+    size = "medium",
     srcs = ["record_input_test.py"],
     additional_deps = [
         "//tensorflow/python:client_testlib",
@@ -2012,13 +2012,18 @@ cuda_py_test(
         "//tensorflow/python:data_flow_ops_gen",
         "//tensorflow/python:distributed_framework_test_lib",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:gradients",
+        "//tensorflow/python:init_ops",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:training",
         "//tensorflow/python:tensor_array_grad",
         "//tensorflow/python:tensor_array_ops",
         "//tensorflow/python:variables",
+        "//tensorflow/python:variable_scope",
+        "//tensorflow/python/eager:backprop",
+        "//tensorflow/python/eager:context",
     ],
     flaky = 1,  # create_local_cluster sometimes times out.
 )
@@ -2312,6 +2317,7 @@ cuda_py_test(
         "//tensorflow/python:control_flow_ops",
         "//tensorflow/python:data_flow_grad",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:gradients",
         "//tensorflow/python:init_ops",
         "//tensorflow/python:nn_grad",
@@ -2320,6 +2326,7 @@ cuda_py_test(
         "//tensorflow/python:sparse_grad",
         "//tensorflow/python:tensor_array_grad",
         "//tensorflow/python:variables",
+        "//tensorflow/python/eager:context",
     ],
     shard_count = 10,
     tags = ["no_windows"],
@@ -2713,10 +2720,7 @@ tf_py_test(
         "//tensorflow/python:variables",
     ],
     shard_count = 3,
-    tags = [
-        "no_windows_gpu",
-        "nozapfhahn",
-    ],
+    tags = ["no_windows_gpu"],
 )
 
 tf_py_test(
@@ -2902,7 +2906,9 @@ tf_py_test(
         "//tensorflow/python:dataset_ops_gen",
         "//tensorflow/python:dtypes",
         "//tensorflow/python:errors",
+        "//tensorflow/python:io_ops",
         "//tensorflow/python:framework_ops",
+        "//tensorflow/python:parsing_ops",
         "//tensorflow/python:platform",
         "//tensorflow/python:tensor_shape",
         "//tensorflow/python:variables",
@@ -2923,7 +2929,9 @@ tf_py_test(
         "//tensorflow/python:dtypes",
         "//tensorflow/python:errors",
         "//tensorflow/python:framework_ops",
+        "//tensorflow/python:io_ops",
         "//tensorflow/python:lib",
+        "//tensorflow/python:parsing_ops",
         "//tensorflow/python:tensor_shape",
         "//tensorflow/python:util",
         "//tensorflow/python/data/ops:iterator_ops",
@@ -3038,6 +3046,7 @@ tf_py_test(
         "//tensorflow/python:function",
         "//tensorflow/python:functional_ops",
         "//tensorflow/python:gradients",
+        "//tensorflow/python:io_ops",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:parsing_ops",
         "//tensorflow/python:script_ops",
