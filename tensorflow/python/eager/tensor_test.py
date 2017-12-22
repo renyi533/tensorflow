@@ -106,6 +106,11 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     t = _create_tensor(n)
     self.assertAllEqual([[1, 2], [3, 4]], t)
 
+  def testNumpyArrayDtype(self):
+    tensor = constant_op.constant([1.0, 2.0, 3.0])
+    numpy_tensor = np.asarray(tensor, dtype=np.int32)
+    self.assertAllEqual(numpy_tensor, [1, 2, 3])
+
   def testCopy(self):
     t = constant_op.constant(1.0)
     tt = copy.copy(t)
@@ -274,6 +279,9 @@ class TFETensorUtilTest(test_util.TensorFlowTestCase):
         ValueError,
         r"Slice dimension must be non-negative. Got -2"):
       pywrap_tensorflow.TFE_Py_TensorShapeSlice([t1], -2)
+
+  def testUnicode(self):
+    self.assertEqual(constant_op.constant(u"asdf").numpy(), b"asdf")
 
   def testSliceDimOutOfRange(self):
     t1 = _create_tensor([[1, 2], [3, 4], [5, 6]], dtype=dtypes.int32)
