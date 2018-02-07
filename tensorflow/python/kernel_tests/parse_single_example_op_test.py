@@ -93,16 +93,23 @@ class ParseExampleTest(test.TestCase):
       if expected_err:
         with self.assertRaisesWithPredicateMatch(expected_err[0],
                                                  expected_err[1]):
-          out = parsing_ops.parse_single_example_v2(**kwargs)
+          out = parsing_ops.parse_single_example(**kwargs)
           sess.run(flatten_values_tensors_or_sparse(out.values()))
         return
       else:
         # Returns dict w/ Tensors and SparseTensors.
-        out = parsing_ops.parse_single_example_v2(**kwargs)
-        result = flatten_values_tensors_or_sparse(out.values())
-        # Check values.
-        tf_result = sess.run(result)
-        _compare_output_to_expected(self, out, expected_values, tf_result)
+        out = parsing_ops.parse_single_example(**kwargs)
+        # Also include a test with the example names specified to retain
+        # code coverage of the unfused version, and ensure that the two
+        # versions produce the same results.
+        out_with_example_name = parsing_ops.parse_single_example(
+            example_names="name", **kwargs)
+        for result_dict in [out, out_with_example_name]:
+          result = flatten_values_tensors_or_sparse(result_dict.values())
+          # Check values.
+          tf_result = sess.run(result)
+          _compare_output_to_expected(self, result_dict, expected_values,
+                                      tf_result)
 
       for k, f in kwargs["features"].items():
         if isinstance(f, parsing_ops.FixedLenFeature) and f.shape is not None:
@@ -410,7 +417,7 @@ class ParseExampleTest(test.TestCase):
             bname: bytes_feature([b"b0_str"]),
         })), example(features=features({
             aname: float_feature([-1, -1]),
-            bname: bytes_feature([b"b1"]),
+            bname: bytes_feature([b""]),
         }))
     ]
 
@@ -419,7 +426,7 @@ class ParseExampleTest(test.TestCase):
         bname: np.array(["b0_str"], dtype=bytes).reshape(1, 1, 1, 1)
     }, {
         aname: np.array([-1, -1], dtype=np.float32).reshape(1, 2, 1),
-        bname: np.array(["b1"], dtype=bytes).reshape(1, 1, 1, 1)
+        bname: np.array([""], dtype=bytes).reshape(1, 1, 1, 1)
     }]
 
     for proto, expected_output in zip(original, expected_outputs):
@@ -841,11 +848,11 @@ class ParseSingleExampleTest(test.TestCase):
       if expected_err:
         with self.assertRaisesWithPredicateMatch(expected_err[0],
                                                  expected_err[1]):
-          out = parsing_ops.parse_single_example_v2(**kwargs)
+          out = parsing_ops.parse_single_example(**kwargs)
           sess.run(flatten_values_tensors_or_sparse(out.values()))
       else:
         # Returns dict w/ Tensors and SparseTensors.
-        out = parsing_ops.parse_single_example_v2(**kwargs)
+        out = parsing_ops.parse_single_example(**kwargs)
         # Check values.
         tf_result = sess.run(flatten_values_tensors_or_sparse(out.values()))
         _compare_output_to_expected(self, out, expected_values, tf_result)

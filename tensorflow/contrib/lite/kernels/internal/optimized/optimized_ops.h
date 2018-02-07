@@ -12,8 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifndef THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_
-#define THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_
+#ifndef TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_
+#define TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_
 
 #include <assert.h>
 #include <stdint.h>
@@ -1538,9 +1538,10 @@ void Add(const int32* input1_data, const Dims<4>& input1_dims,
 // reference_ops.h. Once an optimized version is implemented and NdArrayDesc<T>
 // is no longer referenced in this file, move NdArrayDesc<T> from types.h to
 // reference_ops.h.
-template <FusedActivationFunctionType Ac, typename T>
+template <typename T>
 void BroadcastAdd(const T* input1_data, const Dims<4>& input1_dims,
                   const T* input2_data, const Dims<4>& input2_dims,
+                  T output_activation_min, T output_activation_max,
                   T* output_data, const Dims<4>& output_dims) {
   gemmlowp::ScopedProfilingLabel label("BroadcastAdd");
 
@@ -1563,13 +1564,28 @@ void BroadcastAdd(const T* input1_data, const Dims<4>& input1_dims,
     for (int y = 0; y < ArraySize(output_dims, 2); ++y) {
       for (int x = 0; x < ArraySize(output_dims, 1); ++x) {
         for (int c = 0; c < ArraySize(output_dims, 0); ++c) {
-          output_data[Offset(output_dims, c, x, y, b)] = ActivationFunction<Ac>(
-              input1_data[SubscriptToIndex(desc1, c, x, y, b)] +
-              input2_data[SubscriptToIndex(desc2, c, x, y, b)]);
+          output_data[Offset(output_dims, c, x, y, b)] =
+              ActivationFunctionWithMinMax(
+                  input1_data[SubscriptToIndex(desc1, c, x, y, b)] +
+                      input2_data[SubscriptToIndex(desc2, c, x, y, b)],
+                  output_activation_min, output_activation_max);
         }
       }
     }
   }
+}
+
+// legacy, for compatibility with old checked-in code
+template <FusedActivationFunctionType Ac, typename T>
+void BroadcastAdd(const T* input1_data, const Dims<4>& input1_dims,
+                  const T* input2_data, const Dims<4>& input2_dims,
+                  T* output_data, const Dims<4>& output_dims) {
+  T output_activation_min, output_activation_max;
+  GetActivationMinMax(Ac, &output_activation_min, &output_activation_max);
+
+  BroadcastAdd(input1_data, input1_dims, input2_data, input2_dims,
+               output_activation_min, output_activation_max, output_data,
+               output_dims);
 }
 
 inline void BroadcastAdd(int left_shift, const uint8* input1_data,
@@ -1772,9 +1788,10 @@ void Mul(const int32* input1_data, const Dims<4>& input1_dims,
 // reference_ops.h. Once an optimized version is implemented and NdArrayDesc<T>
 // is no longer referenced in this file, move NdArrayDesc<T> from types.h to
 // reference_ops.h.
-template <FusedActivationFunctionType Ac, typename T>
+template <typename T>
 void BroadcastMul(const T* input1_data, const Dims<4>& input1_dims,
                   const T* input2_data, const Dims<4>& input2_dims,
+                  T output_activation_min, T output_activation_max,
                   T* output_data, const Dims<4>& output_dims) {
   gemmlowp::ScopedProfilingLabel label("BroadcastMul");
 
@@ -1797,13 +1814,28 @@ void BroadcastMul(const T* input1_data, const Dims<4>& input1_dims,
     for (int y = 0; y < ArraySize(output_dims, 2); ++y) {
       for (int x = 0; x < ArraySize(output_dims, 1); ++x) {
         for (int c = 0; c < ArraySize(output_dims, 0); ++c) {
-          output_data[Offset(output_dims, c, x, y, b)] = ActivationFunction<Ac>(
-              input1_data[SubscriptToIndex(desc1, c, x, y, b)] *
-              input2_data[SubscriptToIndex(desc2, c, x, y, b)]);
+          output_data[Offset(output_dims, c, x, y, b)] =
+              ActivationFunctionWithMinMax(
+                  input1_data[SubscriptToIndex(desc1, c, x, y, b)] *
+                      input2_data[SubscriptToIndex(desc2, c, x, y, b)],
+                  output_activation_min, output_activation_max);
         }
       }
     }
   }
+}
+
+// legacy, for compatibility with old checked-in code
+template <FusedActivationFunctionType Ac, typename T>
+void BroadcastMul(const T* input1_data, const Dims<4>& input1_dims,
+                  const T* input2_data, const Dims<4>& input2_dims,
+                  T* output_data, const Dims<4>& output_dims) {
+  T output_activation_min, output_activation_max;
+  GetActivationMinMax(Ac, &output_activation_min, &output_activation_max);
+
+  BroadcastMul(input1_data, input1_dims, input2_data, input2_dims,
+               output_activation_min, output_activation_max, output_data,
+               output_dims);
 }
 
 inline void BroadcastMul(const uint8* input1_data, const Dims<4>& input1_dims,
@@ -1868,6 +1900,61 @@ inline void BroadcastMul(const uint8* input1_data, const Dims<4>& input1_dims,
                output_data, output_dims);
 }
 
+// TODO(aselle): This is not actually optimized yet.
+inline void Div(const float* input1_data, const Dims<4>& input1_dims,
+                const float* input2_data, const Dims<4>& input2_dims,
+                float output_activation_min, float output_activation_max,
+                float* output_data, const Dims<4>& output_dims) {
+  const int batches =
+      MatchingArraySize(input1_dims, 3, input2_dims, 3, output_dims, 3);
+  const int height =
+      MatchingArraySize(input1_dims, 2, input2_dims, 2, output_dims, 2);
+  const int width =
+      MatchingArraySize(input1_dims, 1, input2_dims, 1, output_dims, 1);
+  const int depth =
+      MatchingArraySize(input1_dims, 0, input2_dims, 0, output_dims, 0);
+  for (int b = 0; b < batches; ++b) {
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        for (int c = 0; c < depth; ++c) {
+          output_data[Offset(output_dims, c, x, y, b)] =
+              ActivationFunctionWithMinMax(
+                  input1_data[Offset(input1_dims, c, x, y, b)] /
+                      input2_data[Offset(input2_dims, c, x, y, b)],
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
+
+// TODO(aselle): This is not actually optimized yet.
+inline void Sub(const float* input1_data, const Dims<4>& input1_dims,
+                const float* input2_data, const Dims<4>& input2_dims,
+                float output_activation_min, float output_activation_max,
+                float* output_data, const Dims<4>& output_dims) {
+  const int batches =
+      MatchingArraySize(input1_dims, 3, input2_dims, 3, output_dims, 3);
+  const int height =
+      MatchingArraySize(input1_dims, 2, input2_dims, 2, output_dims, 2);
+  const int width =
+      MatchingArraySize(input1_dims, 1, input2_dims, 1, output_dims, 1);
+  const int depth =
+      MatchingArraySize(input1_dims, 0, input2_dims, 0, output_dims, 0);
+  for (int b = 0; b < batches; ++b) {
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        for (int c = 0; c < depth; ++c) {
+          output_data[Offset(output_dims, c, x, y, b)] =
+              ActivationFunctionWithMinMax(
+                  input1_data[Offset(input1_dims, c, x, y, b)] -
+                      input2_data[Offset(input2_dims, c, x, y, b)],
+                  output_activation_min, output_activation_max);
+        }
+      }
+    }
+  }
+}
 template <FusedActivationFunctionType Ac, typename Scalar>
 void Concatenation(int concat_dim, const Scalar* const* input_data,
                    const Dims<4>* const* input_dims, int inputs_count,
@@ -2851,6 +2938,55 @@ inline void Tanh(const float* input_data, const Dims<4>& input_dims,
   output_map.array() = input_map.array().tanh();
 }
 
+inline void Tanh(const uint8* input_data, const Dims<4>& input_dims,
+                 int32 input_zero_point, int32 input_range_radius,
+                 int32 input_multiplier, int input_left_shift,
+                 uint8* output_data, const Dims<4>& output_dims) {
+  const int batches = MatchingArraySize(input_dims, 3, output_dims, 3);
+  const int height = MatchingArraySize(input_dims, 2, output_dims, 2);
+  const int width = MatchingArraySize(input_dims, 1, output_dims, 1);
+  const int depth = MatchingArraySize(input_dims, 0, output_dims, 0);
+  for (int b = 0; b < batches; ++b) {
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
+        for (int c = 0; c < depth; ++c) {
+          const uint8 input_val_u8 = input_data[Offset(input_dims, c, x, y, b)];
+          const int32 input_val_centered =
+              static_cast<int32>(input_val_u8) - input_zero_point;
+          uint8 output_val;
+          if (input_val_centered <= -input_range_radius) {
+            output_val = 0;
+          } else if (input_val_centered >= input_range_radius) {
+            output_val = 255;
+          } else {
+            const int32 input_val_rescaled =
+                MultiplyByQuantizedMultiplierGreaterThanOne(
+                    input_val_centered, input_multiplier, input_left_shift);
+            using FixedPoint4 = gemmlowp::FixedPoint<int32, 4>;
+            using FixedPoint0 = gemmlowp::FixedPoint<int32, 0>;
+            const FixedPoint4 input_val_f4 =
+                FixedPoint4::FromRaw(input_val_rescaled);
+            const FixedPoint0 output_val_f0 = gemmlowp::tanh(input_val_f4);
+
+            using gemmlowp::RoundingDivideByPOT;
+            int32 output_val_s32 = RoundingDivideByPOT(output_val_f0.raw(), 24);
+            // TODO(mjmatthews): properly wire through this zero offset
+            output_val_s32 += 127;
+            if (output_val_s32 == -1) {
+              // May underflow since we cannot properly represent -1.0f
+              output_val_s32 = 0;
+            }
+            TFLITE_DCHECK_GE(output_val_s32, 0);
+            TFLITE_DCHECK_LE(output_val_s32, 255);
+            output_val = static_cast<uint8>(output_val_s32);
+          }
+          output_data[Offset(output_dims, c, x, y, b)] = output_val;
+        }
+      }
+    }
+  }
+}
+
 inline void Dequantize(const uint8* input_data, const Dims<4>& input_dims,
                        int32 zero_point, double scale, float* output_data,
                        const Dims<4>& output_dims) {
@@ -3323,7 +3459,7 @@ inline void ResizeBilinearGeneric(const float* input_data,
 inline void ResizeBilinear(const float* input_data, const Dims<4>& input_dims,
                            const int32* output_size_data,
                            const Dims<4>& output_size_dims, float* output_data,
-                           const Dims<4>& output_dims) {
+                           const Dims<4>& output_dims, bool align_corners) {
   gemmlowp::ScopedProfilingLabel label("ResizeBilinear");
   int32 batches = MatchingArraySize(input_dims, 3, output_dims, 3);
   int32 input_height = ArraySize(input_dims, 2);
@@ -3338,19 +3474,35 @@ inline void ResizeBilinear(const float* input_data, const Dims<4>& input_dims,
   int32 output_width = output_size_data[Offset(output_size_dims, 1, 0, 0, 0)];
 
   // Specialize for 2x2 upsample.
-  if (output_height == 2 * input_height && output_width == 2 * input_width) {
+  if (!align_corners && output_height == 2 * input_height &&
+      output_width == 2 * input_width) {
     ResizeBilinear2x2(input_data, input_dims, output_data, output_dims, batches,
                       input_height, input_width, depth, output_height,
                       output_width);
   } else {
     float height_scale = static_cast<float>(input_height) / output_height;
     float width_scale = static_cast<float>(input_width) / output_width;
+    if (align_corners && output_height > 1) {
+      height_scale = static_cast<float>(input_height - 1) / (output_height - 1);
+    }
+    if (align_corners && output_width > 1) {
+      width_scale = static_cast<float>(input_width - 1) / (output_width - 1);
+    }
 
     ResizeBilinearGeneric(input_data, input_dims, output_data, output_dims,
                           batches, input_height, input_width, depth,
                           output_height, output_width, height_scale,
                           width_scale);
   }
+}
+
+// legacy, for compatibility with old checked-in code
+inline void ResizeBilinear(const float* input_data, const Dims<4>& input_dims,
+                           const int32* output_size_data,
+                           const Dims<4>& output_size_dims, float* output_data,
+                           const Dims<4>& output_dims) {
+  ResizeBilinear(input_data, input_dims, output_size_data, output_size_dims,
+                 output_data, output_dims, /*align_corners=*/false);
 }
 
 template <typename T>
@@ -3381,10 +3533,11 @@ inline void SpaceToBatchND(const T* input_data, const Dims<4>& input_dims,
     for (int out_h = 0; out_h < output_height; ++out_h) {
       for (int out_w = 0; out_w < output_width; ++out_w) {
         T* out = output_data + Offset(output_dims, 0, out_w, out_h, out_b);
-        if (out_h * block_shape_height < padding_top ||
-            out_h * block_shape_height >= padding_top + input_height ||
-            out_w * block_shape_width < padding_left ||
-            out_w * block_shape_width >= padding_left + input_width) {
+        if (out_h * block_shape_height + shift_h < padding_top ||
+            out_h * block_shape_height + shift_h >=
+                padding_top + input_height ||
+            out_w * block_shape_width + shift_w < padding_left ||
+            out_w * block_shape_width + shift_w >= padding_left + input_width) {
           memset(out, 0, depth * sizeof(T));
         } else {
           const T* in =
@@ -3749,4 +3902,4 @@ void ArgMax(const T3* axis, const T1* input_data, const Dims<4>& input_dims,
 #pragma GCC diagnostic pop
 #endif
 
-#endif  // THIRD_PARTY_TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_
+#endif  // TENSORFLOW_CONTRIB_LITE_KERNELS_INTERNAL_OPTIMIZED_OPS_H_

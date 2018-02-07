@@ -105,29 +105,30 @@ namespace detail {
 // Note: Assumes little endian.
 template <typename F>
 __device__ Eigen::half CudaAtomicCasHelper(Eigen::half* ptr, F accumulate) {
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+  static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "Not little endian");
+#endif
   namespace half_impl = Eigen::half_impl;
   intptr_t intptr = reinterpret_cast<intptr_t>(ptr);
-  if (intptr & 0x3) {
-    assert(!(intptr & 0x1));
+  assert(!(intptr & 0x1));  // should be 2-aligned.
+  if (intptr & 0x2) {
     // The half is in the second part of the uint32 (upper 16 bits).
     uint32* address = reinterpret_cast<uint32*>(intptr - 2);
-    uint32 result = CudaAtomicCasHelper(address, [accumulate](uint32 a) {
-      Eigen::half acc = accumulate(
-          half_impl::__half_raw{static_cast<unsigned short>(a >> 16)});
-      uint32_t upper = static_cast<half_impl::__half_raw>(acc).x;
-      return (upper << 16) | (a & 0xffff);
+    uint32 result = CudaAtomicCasHelper(address, [accumulate](uint32 arg) {
+      unsigned short high = static_cast<unsigned short>(arg >> 16);
+      Eigen::half acc = accumulate(half_impl::raw_uint16_to_half(high));
+      return (static_cast<uint32>(acc.x) << 16) | (arg & 0xffff);
     });
-    return half_impl::__half_raw{static_cast<uint16>(result >> 16)};
+    return half_impl::raw_uint16_to_half(static_cast<uint16>(result >> 16));
   } else {
     // The half is in the first part of the uint32 (lower 16 bits).
     uint32* address = reinterpret_cast<uint32*>(intptr);
-    uint32 result = CudaAtomicCasHelper(address, [accumulate](uint32 a) {
-      Eigen::half acc = accumulate(
-          half_impl::__half_raw{static_cast<unsigned short>(a & 0xffff)});
-      uint32_t lower = static_cast<half_impl::__half_raw>(acc).x;
-      return (a & 0xffff0000) | lower;
+    uint32 result = CudaAtomicCasHelper(address, [accumulate](uint32 arg) {
+      unsigned short low = static_cast<unsigned short>(arg & 0xffff);
+      Eigen::half acc = accumulate(half_impl::raw_uint16_to_half(low));
+      return (arg & 0xffff0000) | static_cast<uint32>(acc.x);
     });
-    return half_impl::__half_raw{static_cast<uint16>(result & 0xffff)};
+    return half_impl::raw_uint16_to_half(static_cast<uint16>(result & 0xffff));
   }
 }
 }  // namespace detail

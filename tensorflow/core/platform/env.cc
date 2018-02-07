@@ -21,8 +21,8 @@ limitations under the License.
 #include <mach-o/dyld.h>
 #endif
 #if defined(__FreeBSD__)
-#include <sys/types.h>
 #include <sys/sysctl.h>
+#include <sys/types.h>
 #endif
 #if defined(PLATFORM_WINDOWS)
 #include <windows.h>
@@ -92,8 +92,12 @@ Status Env::GetFileSystemForFile(const string& fname, FileSystem** result) {
   io::ParseURI(fname, &scheme, &host, &path);
   FileSystem* file_system = file_system_registry_->Lookup(scheme.ToString());
   if (!file_system) {
-    return errors::Unimplemented("File system scheme ", scheme,
-                                 " not implemented");
+    if (scheme.empty()) {
+      scheme = "[local]";
+    }
+
+    return errors::Unimplemented("File system scheme '", scheme,
+                                 "' not implemented (file: '", fname, "')");
   }
   *result = file_system;
   return Status::OK();
@@ -106,6 +110,18 @@ Status Env::GetRegisteredFileSystemSchemes(std::vector<string>* schemes) {
 Status Env::RegisterFileSystem(const string& scheme,
                                FileSystemRegistry::Factory factory) {
   return file_system_registry_->Register(scheme, std::move(factory));
+}
+
+Status Env::FlushFileSystemCaches() {
+  std::vector<string> schemes;
+  TF_RETURN_IF_ERROR(GetRegisteredFileSystemSchemes(&schemes));
+  for (const string& scheme : schemes) {
+    FileSystem* fs = nullptr;
+    TF_RETURN_IF_ERROR(
+        GetFileSystemForFile(io::CreateURI(scheme, "", ""), &fs));
+    fs->FlushCaches();
+  }
+  return Status::OK();
 }
 
 Status Env::NewRandomAccessFile(const string& fname,
@@ -161,8 +177,8 @@ bool Env::FilesExist(const std::vector<string>& files,
     if (!file_system) {
       fs_result = false;
       if (fs_status) {
-        Status s = errors::Unimplemented("File system scheme ", itr.first,
-                                         " not implemented");
+        Status s = errors::Unimplemented("File system scheme '", itr.first,
+                                         "' not implemented");
         local_status.resize(itr.second.size(), s);
       }
     } else {
@@ -318,7 +334,7 @@ bool Env::CreateUniqueFileName(string* prefix, const string& suffix) {
   // Has to be casted to long first, else this error appears:
   // static_cast from 'pthread_t' (aka 'pthread *') to 'int32' (aka 'int')
   // is not allowed
-  int32 tid = static_cast<int32>((long) pthread_self());
+  int32 tid = static_cast<int32>(static_cast<int64>(pthread_self()));
   int32 pid = static_cast<int32>(getpid());
 #elif defined(PLATFORM_WINDOWS)
   int32 tid = static_cast<int32>(GetCurrentThreadId());
@@ -329,10 +345,10 @@ bool Env::CreateUniqueFileName(string* prefix, const string& suffix) {
 #endif
   uint64 now_microsec = NowMicros();
 
-  *prefix += strings::Printf("%s-%x-%d-%llx", port::Hostname().c_str(),
-                           tid, pid, now_microsec);
+  *prefix += strings::Printf("%s-%x-%d-%llx", port::Hostname().c_str(), tid,
+                             pid, now_microsec);
 
-  if (suffix.size()) {
+  if (!suffix.empty()) {
     *prefix += suffix;
   }
   if (FileExists(*prefix).ok()) {

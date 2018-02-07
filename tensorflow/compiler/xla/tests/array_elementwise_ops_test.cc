@@ -1879,18 +1879,71 @@ XLA_TEST_F(ArrayElementwiseOpTest, ClampF32ScalarVector) {
   auto min_scalar = builder.ConstantR0<float>(0.0f);
   auto min_vector = builder.ConstantR1<float>({1.0f, -6.5f, 1.0f, 2.25f, 0.0f});
   auto arg_vector = builder.ConstantR1<float>({2.0f, 10.0f, -5.0f, 1.0f, 4.0f});
-  auto arg_scalar = builder.ConstantR1<float>({2.0f, 10.0f, -5.0f, 1.0f, 4.0f});
   auto max_scalar = builder.ConstantR0<float>(3.0f);
   auto max_vector = builder.ConstantR1<float>({3.0f, 0.5f, 25.5f, 5.0f, 123.0});
   // Perform clamp with broadcasted scalar and vector.
   auto clamp = builder.Add(
       builder.Add(builder.Clamp(min_vector, arg_vector, max_scalar),
                   builder.Clamp(min_scalar, arg_vector, max_vector)),
-      builder.Add(builder.Clamp(min_vector, arg_scalar, max_vector),
-                  builder.Clamp(min_scalar, arg_scalar, max_vector)));
+      builder.Add(builder.Clamp(min_vector, arg_vector, max_vector),
+                  builder.Clamp(min_scalar, arg_vector, max_scalar)));
 
-  ComputeAndCompareR1<float>(&builder, {8.0f, 4.5f, 2.0f, 6.5f, 15.0f}, {},
+  ComputeAndCompareR1<float>(&builder, {8.0f, 7.0f, 2.0f, 6.5f, 14.0f}, {},
                              error_spec_);
+}
+
+XLA_TEST_F(ArrayElementwiseOpTest, ClampS32Vector) {
+  ComputationBuilder builder(client_, TestName());
+  auto min_vector = builder.ConstantR1<int32>({1, -6, 1, 2, 0, -5});
+  auto arg_vector = builder.ConstantR1<int32>({2, 10, -5, 1, 4, 10});
+  auto max_vector = builder.ConstantR1<int32>({3, 0, 25, 5, 123, -1});
+  auto clamp = builder.Clamp(min_vector, arg_vector, max_vector);
+
+  ComputeAndCompareR1<int32>(&builder, {2, 0, 1, 2, 4, -1}, {});
+}
+
+XLA_TEST_F(ArrayElementwiseOpTest, ClampS32ScalarVector) {
+  ComputationBuilder builder(client_, TestName());
+  auto min_scalar = builder.ConstantR0<int32>(0);
+  auto min_vector = builder.ConstantR1<int32>({1, -6, 1, 2, 0});
+  auto arg_vector = builder.ConstantR1<int32>({2, 10, -5, 1, 4});
+  auto max_scalar = builder.ConstantR0<int32>(3);
+  auto max_vector = builder.ConstantR1<int32>({3, 1, 25, 5, 123});
+  // Perform clamp with broadcasted scalar and vector.
+  auto clamp = builder.Add(
+      builder.Add(builder.Clamp(min_vector, arg_vector, max_scalar),
+                  builder.Clamp(min_scalar, arg_vector, max_vector)),
+      builder.Add(builder.Clamp(min_vector, arg_vector, max_vector),
+                  builder.Clamp(min_scalar, arg_vector, max_scalar)));
+
+  ComputeAndCompareR1<int32>(&builder, {8, 8, 2, 6, 14}, {});
+}
+
+XLA_TEST_F(ArrayElementwiseOpTest, ClampU32Vector) {
+  ComputationBuilder builder(client_, TestName());
+  auto min_vector = builder.ConstantR1<uint32>({1, 2, 1, 2, 0, ~0u - 4});
+  auto arg_vector = builder.ConstantR1<uint32>({2, 10, 5, 1, 4, 10});
+  auto max_vector = builder.ConstantR1<uint32>({3, 5, 25, 5, 123, ~0u});
+  auto clamp = builder.Clamp(min_vector, arg_vector, max_vector);
+
+  ComputeAndCompareR1<uint32>(&builder, {2, 5, 5, 2, 4, ~0u - 4}, {});
+}
+
+XLA_TEST_F(ArrayElementwiseOpTest, ClampU32ScalarVector) {
+  ComputationBuilder builder(client_, TestName());
+  auto min_scalar = builder.ConstantR0<uint32>(0);
+  auto min_vector = builder.ConstantR1<uint32>({1, 0, 1, 2, 0});
+  auto arg_vector = builder.ConstantR1<uint32>({2, 10, 0, 1, 4});
+  auto max_scalar = builder.ConstantR0<uint32>(3);
+  auto max_vector = builder.ConstantR1<uint32>({3, 1, 25, 5, 123});
+  // Perform clamp with broadcasted scalar and vector.
+  auto clamp = builder.Add(
+      builder.Add(builder.Clamp(min_vector, arg_vector, max_scalar),
+                  builder.Clamp(min_scalar, arg_vector, max_vector)),
+      builder.Add(builder.Clamp(min_vector, arg_vector, max_vector),
+                  builder.Clamp(min_scalar, arg_vector, max_scalar)));
+
+  ComputeAndCompareR1<uint32>(&builder, {8, 8, 2, 6, 14}, {});
 }
 
 XLA_TEST_F(ArrayElementwiseOpTest, AddTwoParametersF32s) {
@@ -1969,6 +2022,18 @@ XLA_TEST_F(ArrayElementwiseOpTest, SinF32s) {
 
   ComputeAndCompareR1<float>(&builder, {0.0f, 0.0f, 1.0f, -0.707107f}, {},
                              error_spec_);
+}
+
+XLA_TEST_F(ArrayElementwiseOpTest, Atan2F32s) {
+  ComputationBuilder builder(client_, TestName());
+  auto a = builder.ConstantR1<float>({0.0f, 5.0f, 0.0f, -3.0f, 2.0f, -8.0f});
+  auto b = builder.ConstantR1<float>({6.0f, 0.0f, -4.0f, 0.0f, 2.0f, 8.0f});
+  auto atan = builder.Atan2(a, b);
+
+  ComputeAndCompareR1<float>(
+      &builder,
+      {0.0f, 1.57079633f, 3.14159265f, -1.57079633f, 0.78539816f, -0.78539816f},
+      {}, error_spec_);
 }
 
 XLA_TEST_F(ArrayElementwiseOpTest, TanhF32s) {
@@ -2520,9 +2585,8 @@ XLA_TEST_F(ArrayElementwiseOpTest, R4_16x16x2x2_Plus_R1_16) {
   std::iota(r1.begin(), r1.end(), 1.0);
 
   ComputationBuilder builder(client_, TestName());
-  std::unique_ptr<Literal> a_literal = Literal::CreateR4FromArray4D(r4);
-  *a_literal->mutable_shape()->mutable_layout() =
-      LayoutUtil::MakeLayout({0, 1, 2, 3});
+  std::unique_ptr<Literal> a_literal = Literal::CreateR4FromArray4DWithLayout(
+      r4, LayoutUtil::MakeLayout({0, 1, 2, 3}));
   auto a = builder.ConstantLiteral(*a_literal);
   auto b = builder.ConstantR1<float>(r1);
   builder.Add(a, b, {1});

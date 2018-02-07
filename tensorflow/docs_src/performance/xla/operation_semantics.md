@@ -252,7 +252,7 @@ Clamps an operand to within the range between a minimum and maximum value.
 Given an operand and minimum and maximum values, returns the operand if it is in
 the range between the minimum and maximum, else returns the minimum value if the
 operand is below this range or the maximum value if the operand is above this
-range.  That is, `clamp(a, x, b) =  max(min(a, x), b)`.
+range.  That is, `clamp(a, x, b) =  min(max(a, x), b)`.
 
 All three arrays must be the same shape. Alternately, as a restricted form of
 [broadcasting](broadcasting.md), `min` and/or `max` can be a scalar of type `T`.
@@ -1524,23 +1524,6 @@ the reversing dimensions, its index i is transformed into N - 1 - i).
 
 One use for the `Rev` operation is to reverse the convolution weight array along
 the two window dimensions during the gradient computation in neural networks.
-
-## RngBernoulli
-
-See also
-[`ComputationBuilder::RngBernoulli`](https://www.tensorflow.org/code/tensorflow/compiler/xla/client/computation_builder.h).
-
-Constructs an output of a given shape with random numbers generated following
-the Bernoulli distribution. The parameter needs to be a scalar valued F32
-operand while the output shape needs to have elemental type U32.
-
-<b>`RngBernoulli(mean, shape)`</b>
-
-| Arguments | Type                    | Semantics                             |
-| --------- | ----------------------- | ------------------------------------- |
-| `mean`    | `ComputationDataHandle` | Scalar of type F32 specifying mean of |
-:           :                         : generated numbers                     :
-| `shape`   | `Shape`                 | Output shape of type U32              |
 
 ## RngNormal
 

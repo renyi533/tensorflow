@@ -29,15 +29,7 @@ limitations under the License.
 #include <algorithm>
 #include <complex>
 #include "cuda/include/cuda.h"
-#include "cuda/include/device_functions.h"
 #include "tensorflow/core/platform/types.h"
-
-#if __CUDACC_VER_MAJOR__ >= 9
-#include "cuda/include/cuda_fp16.h"
-#elif __CUDACC_VER__ >= 7050
-#include "cuda/include/cuda_fp16.h"
-#else
-#endif
 
 namespace tensorflow {
 

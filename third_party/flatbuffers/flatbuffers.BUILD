@@ -4,6 +4,8 @@ package(
 
 licenses(["notice"])  # Apache 2.0
 
+exports_files(["LICENSE.txt"])
+
 config_setting(
     name = "freebsd",
     values = {"cpu": "freebsd"},
@@ -114,13 +116,14 @@ cc_binary(
         "include/",
     ],
     linkopts = select({
-    ":freebsd": [
-        "-lm",
-    ],
-    "//conditions:default": [
-        "-lm",
-        "-ldl",
-    ]}),
+        ":freebsd": [
+            "-lm",
+        ],
+        "//conditions:default": [
+            "-lm",
+            "-ldl",
+        ],
+    }),
     deps = [
         ":flatc_library",
     ],
