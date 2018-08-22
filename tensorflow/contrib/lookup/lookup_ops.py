@@ -18,9 +18,11 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import functools
+
+from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import gen_lookup_ops
 from tensorflow.python.ops import lookup_ops
 # pylint: disable=unused-import
@@ -40,6 +42,7 @@ from tensorflow.python.ops.lookup_ops import TextFileIndex
 from tensorflow.python.ops.lookup_ops import TextFileInitializer
 from tensorflow.python.ops.lookup_ops import TextFileStringTableInitializer
 # pylint: enable=unused-import
+from tensorflow.python.training.checkpointable import base as checkpointable
 from tensorflow.python.training.saver import BaseSaverBuilder
 from tensorflow.python.util.deprecation import deprecated
 
@@ -105,7 +108,7 @@ def index_table_from_tensor(mapping,
   ...
   tf.tables_initializer().run()
 
-  ids.eval()  ==> [0, 1, 4, 2]
+  ids.eval()  ==> [0, 1, 3, 2]
   ```
 
   Args:
@@ -286,7 +289,7 @@ def index_to_string(tensor, mapping, default_value="UNK", name=None):
   return table.lookup(tensor)
 
 
-class MutableHashTable(LookupInterface):
+class MutableHashTable(LookupInterface, checkpointable.CheckpointableBase):
   """A generic mutable hash table implementation.
 
   Data can be inserted by calling the insert method. It does not support
@@ -298,7 +301,7 @@ class MutableHashTable(LookupInterface):
   table = tf.contrib.lookup.MutableHashTable(key_dtype=tf.string,
                                              value_dtype=tf.int64,
                                              default_value=-1)
-  table.insert(keys, values)
+  sess.run(table.insert(keys, values))
   out = table.lookup(query_keys)
   print(out.eval())
   ```
@@ -337,30 +340,38 @@ class MutableHashTable(LookupInterface):
                                                 dtype=value_dtype)
     self._value_shape = self._default_value.get_shape()
 
+    executing_eagerly = context.executing_eagerly()
+    if executing_eagerly and shared_name is None:
+      # TODO(allenl): This will leak memory due to kernel caching by the
+      # shared_name attribute value (but is better than the alternative of
+      # sharing everything by default when executing eagerly; hopefully creating
+      # tables in a loop is uncommon).
+      shared_name = "table_%d" % (ops.uid(),)
     # The table must be shared if checkpointing is requested for multi-worker
     # training to work correctly. Use the node name if no shared_name has been
     # explicitly specified.
     use_node_name_sharing = checkpoint and shared_name is None
-    # pylint: disable=protected-access
     if self._default_value.get_shape().ndims == 0:
-      self._table_ref = gen_lookup_ops._mutable_hash_table_v2(
+      self._table_ref = gen_lookup_ops.mutable_hash_table_v2(
           shared_name=shared_name,
           use_node_name_sharing=use_node_name_sharing,
           key_dtype=key_dtype,
           value_dtype=value_dtype,
           name=name)
     else:
-      self._table_ref = gen_lookup_ops._mutable_hash_table_of_tensors_v2(
+      self._table_ref = gen_lookup_ops.mutable_hash_table_of_tensors_v2(
           shared_name=shared_name,
           use_node_name_sharing=use_node_name_sharing,
           key_dtype=key_dtype,
           value_dtype=value_dtype,
           value_shape=self._default_value.get_shape(),
           name=name)
-    # pylint: enable=protected-access
+    if executing_eagerly:
+      op_name = None
+    else:
+      op_name = self._table_ref.op.name.split("/")[-1]
     super(MutableHashTable, self).__init__(key_dtype, value_dtype,
-                                           self._table_ref.op.name.split(
-                                               "/")[-1])
+                                           op_name)
 
     if checkpoint:
       saveable = MutableHashTable._Saveable(self, name)
@@ -378,9 +389,7 @@ class MutableHashTable(LookupInterface):
     with ops.name_scope(name, "%s_Size" % self._name,
                         [self._table_ref]) as name:
       with ops.colocate_with(self._table_ref):
-
-        # pylint: disable=protected-access
-        return gen_lookup_ops._lookup_table_size_v2(self._table_ref, name=name)
+        return gen_lookup_ops.lookup_table_size_v2(self._table_ref, name=name)
 
   def lookup(self, keys, name=None):
     """Looks up `keys` in a table, outputs the corresponding values.
@@ -399,18 +408,12 @@ class MutableHashTable(LookupInterface):
     Raises:
       TypeError: when `keys` do not match the table data types.
     """
-    if keys.dtype.base_dtype != self._key_dtype:
-      raise TypeError("Signature mismatch. Keys must be dtype %s, got %s." %
-                      (self._key_dtype, keys.dtype))
-
     with ops.name_scope(name, "%s_lookup_table_find" % self._name,
                         (self._table_ref, keys, self._default_value)) as name:
+      keys = ops.convert_to_tensor(keys, dtype=self._key_dtype, name="keys")
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        values = gen_lookup_ops._lookup_table_find_v2(
+        values = gen_lookup_ops.lookup_table_find_v2(
             self._table_ref, keys, self._default_value, name=name)
-
-        values.set_shape(keys.get_shape().concatenate(self._value_shape))
     return values
 
   def insert(self, keys, values, name=None):
@@ -430,14 +433,13 @@ class MutableHashTable(LookupInterface):
       TypeError: when `keys` or `values` doesn't match the table data
         types.
     """
-    # pylint: disable=protected-access
-    lookup_ops._check_table_dtypes(self, keys.dtype, values.dtype)
-    # pylint: enable=protected-access
     with ops.name_scope(name, "%s_lookup_table_insert" % self._name,
                         [self._table_ref, keys, values]) as name:
+      keys = ops.convert_to_tensor(keys, self._key_dtype, name="keys")
+      values = ops.convert_to_tensor(values, self._value_dtype, name="values")
       with ops.colocate_with(self._table_ref):
         # pylint: disable=protected-access
-        op = gen_lookup_ops._lookup_table_insert_v2(
+        op = gen_lookup_ops.lookup_table_insert_v2(
             self._table_ref, keys, values, name=name)
     return op
 
@@ -454,13 +456,13 @@ class MutableHashTable(LookupInterface):
     with ops.name_scope(name, "%s_lookup_table_export_values" % self._name,
                         [self._table_ref]) as name:
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        exported_keys, exported_values = gen_lookup_ops._lookup_table_export_v2(
+        exported_keys, exported_values = gen_lookup_ops.lookup_table_export_v2(
             self._table_ref, self._key_dtype, self._value_dtype, name=name)
-
-    exported_values.set_shape(exported_keys.get_shape().concatenate(
-        self._value_shape))
     return exported_keys, exported_values
+
+  def _gather_saveables_for_checkpoint(self):
+    """For object-based checkpointing."""
+    return {"table": functools.partial(MutableHashTable._Saveable, table=self)}
 
   class _Saveable(BaseSaverBuilder.SaveableObject):
     """SaveableObject implementation for MutableHashTable."""
@@ -474,14 +476,15 @@ class MutableHashTable(LookupInterface):
       # pylint: disable=protected-access
       super(MutableHashTable._Saveable, self).__init__(table, specs, name)
 
-    def restore(self, restored_tensors, unused_restored_shapes):
+    def restore(self, restored_tensors, restored_shapes):
+      del restored_shapes  # unused
       # pylint: disable=protected-access
       with ops.colocate_with(self.op._table_ref):
-        return gen_lookup_ops._lookup_table_import_v2(
+        return gen_lookup_ops.lookup_table_import_v2(
             self.op._table_ref, restored_tensors[0], restored_tensors[1])
 
 
-class MutableDenseHashTable(LookupInterface):
+class MutableDenseHashTable(LookupInterface, checkpointable.CheckpointableBase):
   """A generic mutable hash table implementation using tensors as backing store.
 
   Data can be inserted by calling the insert method. It does not support
@@ -500,7 +503,7 @@ class MutableDenseHashTable(LookupInterface):
                                                   value_dtype=tf.int64,
                                                   default_value=-1,
                                                   empty_key=0)
-  table.insert(keys, values)
+  sess.run(table.insert(keys, values))
   out = table.lookup(query_keys)
   print(out.eval())
   ```
@@ -543,16 +546,23 @@ class MutableDenseHashTable(LookupInterface):
       ValueError: If checkpoint is True and no name was specified.
     """
     self._default_value = ops.convert_to_tensor(
-        default_value, dtype=value_dtype)
+        default_value, dtype=value_dtype, name="default_value")
     self._value_shape = self._default_value.get_shape()
 
     # The table must be shared if checkpointing is requested for multi-worker
     # training to work correctly. Use the node name if no shared_name has been
     # explicitly specified.
     use_node_name_sharing = checkpoint and shared_name is None
-    empty_key = ops.convert_to_tensor(empty_key, dtype=key_dtype)
-    # pylint: disable=protected-access
-    self._table_ref = gen_lookup_ops._mutable_dense_hash_table_v2(
+    empty_key = ops.convert_to_tensor(
+        empty_key, dtype=key_dtype, name="empty_key")
+    executing_eagerly = context.executing_eagerly()
+    if executing_eagerly and shared_name is None:
+      # TODO(allenl): This will leak memory due to kernel caching by the
+      # shared_name attribute value (but is better than the alternative of
+      # sharing everything by default when executing eagerly; hopefully creating
+      # tables in a loop is uncommon).
+      shared_name = "table_%d" % (ops.uid(),)
+    self._table_ref = gen_lookup_ops.mutable_dense_hash_table_v2(
         empty_key=empty_key,
         shared_name=shared_name,
         use_node_name_sharing=use_node_name_sharing,
@@ -560,9 +570,12 @@ class MutableDenseHashTable(LookupInterface):
         value_shape=self._value_shape,
         initial_num_buckets=initial_num_buckets,
         name=name)
-    # pylint: enable=protected-access
+    if executing_eagerly:
+      op_name = None
+    else:
+      op_name = self._table_ref.op.name.split("/")[-1]
     super(MutableDenseHashTable, self).__init__(
-        key_dtype, value_dtype, self._table_ref.op.name.split("/")[-1])
+        key_dtype, value_dtype, op_name)
 
     if checkpoint:
       saveable = MutableDenseHashTable._Saveable(self, name)
@@ -580,8 +593,7 @@ class MutableDenseHashTable(LookupInterface):
     with ops.name_scope(name, "%s_Size" % self._name,
                         [self._table_ref]) as name:
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        return gen_lookup_ops._lookup_table_size_v2(self._table_ref, name=name)
+        return gen_lookup_ops.lookup_table_size_v2(self._table_ref, name=name)
 
   def lookup(self, keys, name=None):
     """Looks up `keys` in a table, outputs the corresponding values.
@@ -600,21 +612,13 @@ class MutableDenseHashTable(LookupInterface):
     Raises:
       TypeError: when `keys` do not match the table data types.
     """
-    if keys.dtype.base_dtype != self._key_dtype:
-      raise TypeError("Signature mismatch. Keys must be dtype %s, got %s." %
-                      (self._key_dtype, keys.dtype))
-
     with ops.name_scope(name, "%s_lookup_table_find" % self._name,
                         [self._table_ref, keys]) as name:
+      keys = ops.convert_to_tensor(keys, dtype=self._key_dtype, name="keys")
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        values = gen_lookup_ops._lookup_table_find_v2(
+        values = gen_lookup_ops.lookup_table_find_v2(
             self._table_ref, keys, self._default_value, name=name)
 
-    if keys.get_shape().ndims is not None and keys.get_shape().ndims > 0:
-      values.set_shape(
-          tensor_shape.TensorShape([keys.get_shape().dims[0]]).concatenate(
-              self._value_shape))
     return values
 
   def insert(self, keys, values, name=None):
@@ -634,14 +638,13 @@ class MutableDenseHashTable(LookupInterface):
       TypeError: when `keys` or `values` doesn't match the table data
         types.
     """
-    # pylint: disable=protected-access
-    lookup_ops._check_table_dtypes(self, keys.dtype, values.dtype)
-    # pylint: enable=protected-access
     with ops.name_scope(name, "%s_lookup_table_insert" % self._name,
                         [self._table_ref, keys, values]) as name:
+      keys = ops.convert_to_tensor(keys, dtype=self._key_dtype, name="keys")
+      values = ops.convert_to_tensor(
+          values, dtype=self._value_dtype, name="values")
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        op = gen_lookup_ops._lookup_table_insert_v2(
+        op = gen_lookup_ops.lookup_table_insert_v2(
             self._table_ref, keys, values, name=name)
       return op
 
@@ -658,13 +661,15 @@ class MutableDenseHashTable(LookupInterface):
     with ops.name_scope(name, "%s_lookup_table_export_values" % self._name,
                         [self._table_ref]) as name:
       with ops.colocate_with(self._table_ref):
-        # pylint: disable=protected-access
-        exported_keys, exported_values = gen_lookup_ops._lookup_table_export_v2(
+        exported_keys, exported_values = gen_lookup_ops.lookup_table_export_v2(
             self._table_ref, self._key_dtype, self._value_dtype, name=name)
 
-    exported_values.set_shape(exported_keys.get_shape().concatenate(
-        self._value_shape))
     return exported_keys, exported_values
+
+  def _gather_saveables_for_checkpoint(self):
+    """For object-based checkpointing."""
+    return {"table": functools.partial(
+        MutableDenseHashTable._Saveable, table=self)}
 
   class _Saveable(BaseSaverBuilder.SaveableObject):
     """SaveableObject implementation for MutableDenseHashTable."""
@@ -678,8 +683,9 @@ class MutableDenseHashTable(LookupInterface):
       # pylint: disable=protected-access
       super(MutableDenseHashTable._Saveable, self).__init__(table, specs, name)
 
-    def restore(self, restored_tensors, unused_restored_shapes):
+    def restore(self, restored_tensors, restored_shapes):
+      del restored_shapes  # unused
       # pylint: disable=protected-access
       with ops.colocate_with(self.op._table_ref):
-        return gen_lookup_ops._lookup_table_import_v2(
+        return gen_lookup_ops.lookup_table_import_v2(
             self.op._table_ref, restored_tensors[0], restored_tensors[1])

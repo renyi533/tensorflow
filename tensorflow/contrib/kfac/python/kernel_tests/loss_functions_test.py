@@ -24,7 +24,6 @@ from tensorflow.contrib.kfac.python.ops import loss_functions
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import random_ops
 from tensorflow.python.platform import test
 
 
@@ -39,7 +38,7 @@ class InsertSliceInZerosTest(test.TestCase):
     input_tensor = constant_op.constant([[[1, 2]], [[3, 4]]])
     expected_output_array = [[[1, 2], [0, 0]], [[3, 4], [0, 0]]]
     op = loss_functions.insert_slice_in_zeros(input_tensor, 1, 2, 0)
-    with self.test_session() as sess:
+    with self.cached_session() as sess:
       actual_output_array = sess.run(op)
     self.assertAllEqual(expected_output_array, actual_output_array)
 
@@ -48,7 +47,7 @@ class CategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testSample(self):
     """Ensure samples can be drawn."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -61,7 +60,7 @@ class CategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testEvaluateOnTargets(self):
     """Ensure log probability can be evaluated correctly."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -84,7 +83,7 @@ class CategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testEvaluateOnSample(self):
     """Ensure log probability of a sample can be drawn."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -97,24 +96,8 @@ class CategoricalLogitsNegativeLogProbLossTest(test.TestCase):
       # difficult to say if the output is correct or not...
       neg_log_prob = sess.run(neg_log_prob)
 
-  def testMultiMinibatchRegistration(self):
-    """Ensure this loss function supports registering multiple minibatches."""
-    with ops.Graph().as_default():
-      tower_logits = []
-      loss = None
-      num_towers = 5
-      for _ in range(num_towers):
-        logits = random_ops.random_uniform(shape=[2, 3])
-        tower_logits.append(logits)
-        if loss is None:
-          loss = loss_functions.CategoricalLogitsNegativeLogProbLoss(logits)
-        else:
-          loss.register_additional_minibatch(logits)
-      self.assertListEqual(loss.input_minibatches, tower_logits)
-      self.assertEqual(loss.num_registered_minibatches, num_towers)
-
   def testMultiplyFisherSingleVector(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.array([1., 2., 3.])
       loss = loss_functions.CategoricalLogitsNegativeLogProbLoss(logits)
 
@@ -133,7 +116,7 @@ class CategoricalLogitsNegativeLogProbLossTest(test.TestCase):
         self.assertAllClose(expected_result, sess.run(result))
 
   def testMultiplyFisherBatch(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.array([[1., 2., 3.], [4., 6., 8.]])
       loss = loss_functions.CategoricalLogitsNegativeLogProbLoss(logits)
 
@@ -154,7 +137,7 @@ class OnehotCategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testSample(self):
     """Ensure samples can be drawn."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -167,7 +150,7 @@ class OnehotCategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testEvaluateOnTargets(self):
     """Ensure log probability can be evaluated correctly."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -190,7 +173,7 @@ class OnehotCategoricalLogitsNegativeLogProbLossTest(test.TestCase):
 
   def testEvaluateOnSample(self):
     """Ensure log probability of a sample can be drawn."""
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       logits = np.asarray([
           [0., 0., 0.],  #
           [1., -1., 0.]
@@ -202,24 +185,6 @@ class OnehotCategoricalLogitsNegativeLogProbLossTest(test.TestCase):
       # Simply ensure this doesn't crash. As the output is random, it's
       # difficult to say if the output is correct or not...
       neg_log_prob = sess.run(neg_log_prob)
-
-  def testMultiMinibatchRegistration(self):
-    """Ensure this loss function supports registering multiple minibatches."""
-    with ops.Graph().as_default():
-      tower_logits = []
-      loss = None
-      num_towers = 5
-      for _ in range(num_towers):
-        logits = random_ops.random_uniform(shape=[2, 3])
-        tower_logits.append(logits)
-        if loss is None:
-          loss = loss_functions.OnehotCategoricalLogitsNegativeLogProbLoss(
-              logits)
-        else:
-          loss.register_additional_minibatch(logits)
-      self.assertListEqual(loss.input_minibatches, tower_logits)
-      self.assertEqual(loss.num_registered_minibatches, num_towers)
-
 
 if __name__ == "__main__":
   test.main()

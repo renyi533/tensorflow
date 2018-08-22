@@ -21,8 +21,11 @@ limitations under the License.
 
 #include <algorithm>
 #include <string>
+#include <type_traits>
 #include <vector>
 
+#include "absl/algorithm/container.h"
+#include "absl/container/inlined_vector.h"
 #include "tensorflow/compiler/xla/status.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/types.h"
@@ -52,7 +55,7 @@ Status WithLogBacktrace(const Status& status);
 // the InlinedVector will just behave like an std::vector<> and allocate the
 // memory to store its values.
 static constexpr int kInlineRank = 8;
-using DimensionVector = tensorflow::gtl::InlinedVector<int64, kInlineRank>;
+using DimensionVector = absl::InlinedVector<int64, kInlineRank>;
 
 // RAII timer that logs with a given label the wall clock time duration in human
 // readable form. This differs from base's ElapsedTimer primarily in that it
@@ -216,6 +219,12 @@ Status Unavailable(const char* format, ...) TF_PRINTF_ATTRIBUTE(1, 2);
 
 // Passed-varargs variant of the InvalidArgument factory above.
 Status InvalidArgumentV(const char* format, va_list args);
+
+template <typename... Args>
+Status InvalidArgumentStrCat(Args&&... concat) {
+  return InvalidArgument(
+      "%s", tensorflow::strings::StrCat(std::forward<Args>(concat)...).c_str());
+}
 
 template <typename... Args>
 Status UnimplementedStrCat(Args&&... concat) {
@@ -426,33 +435,56 @@ std::vector<std::pair<int64, int64>> CommonFactors(
 // Removes illegal characters from filenames.
 string SanitizeFileName(string file_name);
 
-template <typename Container, typename Predicate>
-bool c_all_of(Container container, Predicate predicate) {
-  return std::all_of(std::begin(container), std::end(container), predicate);
+template <typename C, typename Value>
+int64 FindIndex(const C& c, Value&& value) {
+  auto it = absl::c_find(c, std::forward<Value>(value));
+  return std::distance(c.begin(), it);
 }
 
-template <typename InputContainer, typename OutputIterator,
-          typename UnaryOperation>
-OutputIterator c_transform(InputContainer input_container,
-                           OutputIterator output_iterator,
-                           UnaryOperation unary_op) {
-  return std::transform(std::begin(input_container), std::end(input_container),
-                        output_iterator, unary_op);
+template <typename T>
+bool ArrayContains(tensorflow::gtl::ArraySlice<T> c, const T& value) {
+  return absl::c_find(c, value) != c.end();
 }
 
-template <class InputContainer, class OutputIterator, class UnaryPredicate>
-OutputIterator c_copy_if(InputContainer input_container,
-                         OutputIterator output_iterator,
-                         UnaryPredicate predicate) {
-  return std::copy_if(std::begin(input_container), std::end(input_container),
-                      output_iterator, predicate);
+template <typename C, typename Value>
+void InsertAt(C* c, int64 index, Value&& value) {
+  c->insert(c->begin() + index, std::forward<Value>(value));
 }
 
-template <class InputContainer, class Comparator>
-void c_sort(InputContainer& input_container, Comparator comparator) {
-  std::sort(input_container.begin(), input_container.end(), comparator);
+template <typename C>
+void EraseAt(C* c, int64 index) {
+  c->erase(c->begin() + index);
 }
 
+template <typename T>
+std::vector<T> ArraySliceToVector(tensorflow::gtl::ArraySlice<T> slice) {
+  return std::vector<T>(slice.begin(), slice.end());
+}
+
+template <typename T, size_t N>
+std::vector<T> InlinedVectorToVector(
+    const absl::InlinedVector<T, N>& inlined_vector) {
+  return std::vector<T>(inlined_vector.begin(), inlined_vector.end());
+}
+
+// Returns true if `x` fits in 32-bits.
+template <typename T>
+bool IsInt32(T x) {
+  // Following conversion rules: "the value is unchanged if it can be
+  // represented in the destination type (and bit-field width); otherwise, the
+  // value is implementation-defined."
+  return static_cast<int32>(x) == x;
+}
+
+template <typename T>
+Status EraseElementFromVector(std::vector<T>* container, const T& value) {
+  // absl::c_find returns a const_iterator which does not seem to work on
+  // gcc 4.8.4, and this breaks the ubuntu/xla_gpu build bot.
+  auto it = std::find(container->begin(), container->end(), value);
+  TF_RET_CHECK(it != container->end());
+  container->erase(it);
+  return Status::OK();
+}
 }  // namespace xla
 
 #define XLA_LOG_LINES(SEV, STRING) \

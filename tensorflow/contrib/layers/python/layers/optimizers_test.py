@@ -61,11 +61,12 @@ class OptimizersTest(test.TestCase):
     optimizers = [
         "SGD", gradient_descent.GradientDescentOptimizer,
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1),
-        lambda lr: gradient_descent.GradientDescentOptimizer(learning_rate=lr)
+        lambda lr: gradient_descent.GradientDescentOptimizer(learning_rate=lr),
+        "Momentum"
     ]
     for optimizer in optimizers:
       with ops.Graph().as_default() as g:
-        with self.test_session(graph=g) as session:
+        with self.session(graph=g) as session:
           x, var, loss, global_step = _setup_model()
           train = optimizers_lib.optimize_loss(
               loss, global_step, learning_rate=0.1, optimizer=optimizer)
@@ -81,7 +82,7 @@ class OptimizersTest(test.TestCase):
       return gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
 
     with ops.Graph().as_default() as g:
-      with self.test_session(graph=g) as session:
+      with self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         train = optimizers_lib.optimize_loss(
             loss, global_step, learning_rate=None, optimizer=optimizer_fn)
@@ -95,14 +96,14 @@ class OptimizersTest(test.TestCase):
     optimizers = ["blah", variables.Variable, object(), lambda x: None]
     for optimizer in optimizers:
       with ops.Graph().as_default() as g:
-        with self.test_session(graph=g):
+        with self.session(graph=g):
           _, _, loss, global_step = _setup_model()
           with self.assertRaises(ValueError):
             optimizers_lib.optimize_loss(
                 loss, global_step, learning_rate=0.1, optimizer=optimizer)
 
   def testBadSummaries(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       _, _, loss, global_step = _setup_model()
       with self.assertRaises(ValueError):
         optimizers_lib.optimize_loss(
@@ -110,7 +111,7 @@ class OptimizersTest(test.TestCase):
             summaries=["loss", "bad_summary"])
 
   def testInvalidLoss(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       _, _, _, global_step = _setup_model()
       with self.assertRaises(ValueError):
         optimizers_lib.optimize_loss(
@@ -120,7 +121,7 @@ class OptimizersTest(test.TestCase):
             [[1.0]], global_step, learning_rate=0.1, optimizer="SGD")
 
   def testInvalidGlobalStep(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       x = array_ops.placeholder(dtypes.float32, [])
       var = variable_scope.get_variable(
           "test", [], initializer=init_ops.constant_initializer(10))
@@ -156,7 +157,7 @@ class OptimizersTest(test.TestCase):
             optimizer="SGD")
 
   def testInvalidLearningRate(self):
-    with ops.Graph().as_default() as g, self.test_session(graph=g):
+    with ops.Graph().as_default() as g, self.session(graph=g):
       _, _, loss, global_step = _setup_model()
       with self.assertRaises(ValueError):
         optimizers_lib.optimize_loss(
@@ -269,7 +270,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x = array_ops.placeholder(dtypes.float32, [])
         var = variable_scope.get_variable(
             "test", [], initializer=init_ops.constant_initializer(10))
@@ -294,7 +295,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g):
+      with ops.Graph().as_default() as g, self.session(graph=g):
         x = array_ops.placeholder(dtypes.float32, [])
         var = variable_scope.get_variable(
             "test", [], initializer=init_ops.constant_initializer(10))
@@ -318,7 +319,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         update_var = variable_scope.get_variable(
             "update", [], initializer=init_ops.constant_initializer(10))
@@ -341,7 +342,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         update_var = variable_scope.get_variable(
             "update", [], initializer=init_ops.constant_initializer(10))
@@ -364,7 +365,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         update_var = variable_scope.get_variable(
             "update", [], initializer=init_ops.constant_initializer(10))
@@ -388,7 +389,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         update_var = variable_scope.get_variable(
             "update", [], initializer=init_ops.constant_initializer(10))
@@ -412,7 +413,7 @@ class OptimizersTest(test.TestCase):
         gradient_descent.GradientDescentOptimizer(learning_rate=0.1)
     ]
     for optimizer in optimizers:
-      with ops.Graph().as_default() as g, self.test_session(graph=g) as session:
+      with ops.Graph().as_default() as g, self.session(graph=g) as session:
         x, var, loss, global_step = _setup_model()
         update_var = variable_scope.get_variable(
             "update", [], initializer=init_ops.constant_initializer(10))

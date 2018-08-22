@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import numpy as np
 
+from tensorflow.contrib.kfac.python.ops import fisher_factors as ff
 from tensorflow.contrib.kfac.python.ops import layer_collection as lc
 from tensorflow.contrib.kfac.python.ops import optimizer
 from tensorflow.python.framework import ops
@@ -30,6 +31,13 @@ from tensorflow.python.ops import nn
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.ops import variables as tf_variables
 from tensorflow.python.platform import test
+
+
+# We need to set these constants since the numerical values used in the tests
+# were chosen when these used to be the defaults.
+ff.set_global_constants(init_covariances_at_zero=False,
+                        zero_debias=False,
+                        init_inverses_at_zero=False)
 
 
 def dummy_layer_collection():
@@ -76,7 +84,7 @@ class OptimizerTest(test.TestCase):
           momentum_type='regular')
 
   def testSquaredFisherNorm(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       grads_and_vars = [(array_ops.constant([[1., 2.], [3., 4.]]), None),
                         (array_ops.constant([[2., 3.], [4., 5.]]), None)]
       pgrads_and_vars = [(array_ops.constant([[3., 4.], [5., 6.]]), None),
@@ -86,7 +94,7 @@ class OptimizerTest(test.TestCase):
       self.assertAlmostEqual(174., sess.run(sq_norm), places=5)
 
   def testUpdateClipCoeff(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       grads_and_vars = [(array_ops.constant([[1., 2.], [3., 4.]]), None),
                         (array_ops.constant([[2., 3.], [4., 5.]]), None)]
       pgrads_and_vars = [(array_ops.constant([[3., 4.], [5., 6.]]), None),
@@ -121,7 +129,7 @@ class OptimizerTest(test.TestCase):
     pass
 
   def testUpdateVelocities(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       layers = lc.LayerCollection()
       layers.register_categorical_predictive_distribution(
           array_ops.constant([1.0]))
@@ -159,7 +167,7 @@ class OptimizerTest(test.TestCase):
         self.assertFalse(np.equal(first, second).all())
 
   def testApplyGradients(self):
-    with ops.Graph().as_default(), self.test_session() as sess:
+    with ops.Graph().as_default(), self.cached_session() as sess:
       layer_collection = lc.LayerCollection()
 
       inputs = array_ops.ones((2, 1)) * 2
@@ -186,6 +194,11 @@ class OptimizerTest(test.TestCase):
           layer_collection,
           momentum=0.5,
           momentum_type='regular')
+      (cov_update_thunks,
+       inv_update_thunks) = opt.make_vars_and_create_op_thunks()
+      cov_update_ops = tuple(thunk() for thunk in cov_update_thunks)
+      inv_update_ops = tuple(thunk() for thunk in inv_update_thunks)
+
       grads_and_vars = opt.compute_gradients(output, [weights, bias])
       all_vars = [grad_and_var[1] for grad_and_var in grads_and_vars]
 
@@ -193,6 +206,8 @@ class OptimizerTest(test.TestCase):
 
       sess.run(tf_variables.global_variables_initializer())
       old_vars = sess.run(all_vars)
+      sess.run(cov_update_ops)
+      sess.run(inv_update_ops)
       sess.run(op)
       new_vars = sess.run(all_vars)
 

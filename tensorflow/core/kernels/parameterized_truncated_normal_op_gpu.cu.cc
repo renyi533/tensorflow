@@ -29,7 +29,7 @@ limitations under the License.
 #include "tensorflow/core/lib/random/random_distributions.h"
 #include "tensorflow/core/util/cuda_kernel_helper.h"
 
-#ifdef COMPILER_MSVC
+#if defined(_MSC_VER) && !defined(__clang__)
 // msvc does not support unroll. One could try the loop pragma but we need to
 // take a closer look if this generates better code in this case. For now let
 // the compiler take care of it.
@@ -190,7 +190,7 @@ __global__ void __launch_bounds__(1024)
 // Partial specialization for GPU
 template <typename T>
 struct TruncatedNormalFunctor<GPUDevice, T> {
-  static const int kMaxIterations = 100;
+  static const int kMaxIterations = 1000;
 
   void operator()(OpKernelContext* ctx, const GPUDevice& d, int64 num_batches,
                   int64 samples_per_batch, int64 num_elements,

@@ -17,3 +17,8 @@ message SplitInfo {
   // Right Leaf node.
   tensorflow.boosted_trees.trees.Leaf right_child = 3;
 }
+
+message ObliviousSplitInfo {
+  tensorflow.boosted_trees.trees.TreeNode split_node = 1;
+  repeated tensorflow.boosted_trees.trees.Leaf children = 2;
+}

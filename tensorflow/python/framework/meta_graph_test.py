@@ -61,7 +61,6 @@ def _TestDir(test_name):
 # pylint: enable=invalid-name
 
 
-@test_util.with_c_api
 class SimpleMetaGraphTest(test.TestCase):
 
   def testNoVariables(self):
@@ -71,7 +70,7 @@ class SimpleMetaGraphTest(test.TestCase):
     input_feed_value = -10  # Arbitrary input value for feed_dict.
 
     orig_graph = ops.Graph()
-    with self.test_session(graph=orig_graph) as sess:
+    with self.session(graph=orig_graph) as sess:
       # Create a minimal graph with zero variables.
       input_tensor = array_ops.placeholder(
           dtypes.float32, shape=[], name="input")
@@ -99,7 +98,7 @@ class SimpleMetaGraphTest(test.TestCase):
 
     # Create a clean graph and import the MetaGraphDef nodes.
     new_graph = ops.Graph()
-    with self.test_session(graph=new_graph) as sess:
+    with self.session(graph=new_graph) as sess:
       # Import the previously export meta graph.
       meta_graph.import_scoped_meta_graph(filename)
 
@@ -198,7 +197,7 @@ class SimpleMetaGraphTest(test.TestCase):
     # When inputs to the Complex Op are float64 instances, "T" maps to float64
     # and "Tout" maps to complex128. Since these attr values don't map to their
     # defaults, they must not be stripped.
-    with self.test_session(graph=ops.Graph()):
+    with self.session(graph=ops.Graph()):
       real_num = constant_op.constant(1.0, dtype=dtypes.float64, name="real")
       imag_num = constant_op.constant(2.0, dtype=dtypes.float64, name="imag")
       math_ops.complex(real_num, imag_num, name="complex")
@@ -261,8 +260,30 @@ class SimpleMetaGraphTest(test.TestCase):
       self.assertEqual(node_def.attr["attr_1"].i, 1)
       self.assertTrue(meta_graph_def.meta_info_def.stripped_default_attrs)
 
+  def testVariableObjectsAreSharedAmongCollections(self):
+    with ops.Graph().as_default() as graph1:
+      v = variables.Variable(3.0)
+      # A single instance of Variable is shared among the collections:
+      global_vars = graph1.get_collection(ops.GraphKeys.GLOBAL_VARIABLES)
+      trainable_vars = graph1.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES)
+      self.assertEqual(len(global_vars), 1)
+      self.assertEqual(len(trainable_vars), 1)
+      self.assertIs(global_vars[0], trainable_vars[0])
+      self.assertIs(v, global_vars[0])
 
-@test_util.with_c_api
+    orig_meta_graph, _ = meta_graph.export_scoped_meta_graph(graph=graph1)
+    del graph1  # To avoid accidental references in code involving graph2.
+
+    with ops.Graph().as_default() as graph2:
+      meta_graph.import_scoped_meta_graph(orig_meta_graph)
+      global_vars = graph2.get_collection(ops.GraphKeys.GLOBAL_VARIABLES)
+      trainable_vars = graph2.get_collection(ops.GraphKeys.TRAINABLE_VARIABLES)
+      self.assertEqual(len(global_vars), 1)
+      self.assertEqual(len(trainable_vars), 1)
+      # A single instance of Variable is shared among the collections:
+      self.assertIs(global_vars[0], trainable_vars[0])
+
+
 class ScopedMetaGraphTest(test.TestCase):
 
   def _testScopedExport(self, test_dir, exported_filenames):
@@ -453,11 +474,12 @@ class ScopedMetaGraphTest(test.TestCase):
     # Create a simple while loop.
     with ops.Graph().as_default():
       with ops.name_scope("export"):
-        var = variables.Variable(0)
+        var = variables.Variable(0.)
         var_name = var.name
-        _, output = control_flow_ops.while_loop(lambda i, x: i < 5,
-                                                lambda i, x: (i + 1, x + i),
-                                                [0, var])
+        _, output = control_flow_ops.while_loop(
+            lambda i, x: i < 5,
+            lambda i, x: (i + 1, x + math_ops.cast(i, dtypes.float32)),
+            [0, var])
         output_name = output.name
 
       # Generate a MetaGraphDef containing the while loop with an export scope.
@@ -499,6 +521,31 @@ class ScopedMetaGraphTest(test.TestCase):
         actual_grad_value = sess.run(grad)
         self.assertEqual(expected_grad_value, actual_grad_value)
 
+  def testImportWhileLoopInWhileLoop(self):
+    # Create a simple while loop.
+    with ops.Graph().as_default():
+      var = variables.Variable(0.0)
+      _, output = control_flow_ops.while_loop(lambda i, x: i < 5,
+                                              lambda i, x: (i + 1, x * 2.0),
+                                              [0, var])
+      output_name = output.name
+
+      # Generate a MetaGraphDef containing the while loop with an export scope.
+      meta_graph_def, _ = meta_graph.export_scoped_meta_graph()
+
+    # Restore the MetaGraphDef in a while loop in a new graph.
+    with ops.Graph().as_default():
+
+      def body(i, _):
+        meta_graph.import_scoped_meta_graph(meta_graph_def)
+        return i + 1, ops.get_default_graph().get_tensor_by_name(output_name)
+
+      _, x = control_flow_ops.while_loop(lambda i, x: i < 2, body, [0, 0.0],
+                                         name="")
+      with session.Session() as sess:
+        sess.run(variables.global_variables_initializer())
+        sess.run(x)
+
   def testScopedImportUnderNameScope(self):
     graph = ops.Graph()
     with graph.as_default():
@@ -513,6 +560,21 @@ class ScopedMetaGraphTest(test.TestCase):
         self.assertEqual(len(imported_variables), 1)
         self.assertEqual(list(imported_variables.values())[0].name,
                          "foo/bar/myvar:0")
+
+  def testScopedImportUnderNameScopeNoVarScope(self):
+    graph = ops.Graph()
+    with graph.as_default():
+      variables.Variable(initial_value=1.0, trainable=True, name="myvar")
+    meta_graph_def, _ = meta_graph.export_scoped_meta_graph(graph=graph)
+
+    graph = ops.Graph()
+    with graph.as_default():
+      with ops.name_scope("foo"):
+        imported_variables = meta_graph.import_scoped_meta_graph(
+            meta_graph_def)
+        self.assertEqual(len(imported_variables), 1)
+        self.assertEqual(list(imported_variables.values())[0].name,
+                         "foo/myvar:0")
 
   def testImportsUsingSameScopeName(self):
     with ops.Graph().as_default():
@@ -777,7 +839,6 @@ class ScopedMetaGraphTest(test.TestCase):
     self.assertEqual("", str(graph2.as_graph_element("matmul").device))
 
 
-@test_util.with_c_api
 class MetaGraphWithVariableScopeTest(test.TestCase):
 
   def testMetricsCollection(self):
@@ -794,7 +855,7 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
         _TestDir("metrics_export"), "meta_graph.pb")
 
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       values_queue = data_flow_ops.FIFOQueue(
           4, dtypes.float32, shapes=(1, 2))
       _enqueue_vector(sess, values_queue, [0, 1])
@@ -815,7 +876,7 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
     # Verifies that importing a meta_graph with LOCAL_VARIABLES collection
     # works correctly.
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       meta_graph.import_scoped_meta_graph(meta_graph_filename)
       initializer = variables.local_variables_initializer()
       sess.run(initializer)
@@ -824,7 +885,7 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
     # collection is of node_list type works, but cannot build initializer
     # with the collection.
     graph = ops.Graph()
-    with self.test_session(graph=graph) as sess:
+    with self.session(graph=graph) as sess:
       meta_graph.import_scoped_meta_graph(
           test.test_src_dir_path(
               "python/framework/testdata/metrics_export_meta_graph.pb"))
@@ -835,7 +896,6 @@ class MetaGraphWithVariableScopeTest(test.TestCase):
         initializer = variables.local_variables_initializer()
 
 
-@test_util.with_c_api
 class ExportImportAcrossScopesTest(test.TestCase):
 
   def testPartionedVariables(self):
@@ -882,22 +942,12 @@ class ExportImportAcrossScopesTest(test.TestCase):
       with variable_scope.variable_scope("importA/keepA"):
         graph_fn(use_resource=use_resource)
 
-      if use_resource:
-        # Bringing in a collection that contains ResourceVariables adds ops
-        # to the graph, so mimic the same behavior.
-        for collection_key in sorted([
-            ops.GraphKeys.GLOBAL_VARIABLES,
-            ops.GraphKeys.TRAINABLE_VARIABLES,
-        ]):
-          for var in expected_graph.get_collection(collection_key):
-            var._read_variable_op()
-
     result = meta_graph.export_scoped_meta_graph(graph=imported_graph)[0]
     expected = meta_graph.export_scoped_meta_graph(graph=expected_graph)[0]
 
     if use_resource:
       # Clear all shared_name attributes before comparing, since they are
-      # supposed to be orthogonal to scopes.
+      # orthogonal to scopes and are not updated on export/import.
       for meta_graph_def in [result, expected]:
         for node in meta_graph_def.graph_def.node:
           shared_name_attr = "shared_name"
