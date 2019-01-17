@@ -175,6 +175,19 @@ REGISTER_OP("ResizeBilinear")
     .SetShapeFn(ResizeShapeFn);
 
 // --------------------------------------------------------------------------
+REGISTER_OP("ScaleAndTranslate")
+    .Input("images: T")
+    .Input("size: int32")
+    .Input("scale: float")
+    .Input("translation: float")
+    .Output("resized_images: float")
+    .Attr(
+        "T: {int8, uint8, int16, uint16, int32, int64, bfloat16, half, "
+        "float, double}")
+    .Attr("kernel_type: string = 'lanczos3'")
+    .SetShapeFn(ResizeShapeFn);
+
+// --------------------------------------------------------------------------
 REGISTER_OP("QuantizedResizeBilinear")
     .Input("images: T")
     .Input("size: int32")
@@ -203,6 +216,20 @@ REGISTER_OP("ResizeBilinearGrad")
     .Output("output: T")
     .Attr("T: {float, bfloat16, half, double}")
     .Attr("align_corners: bool = false")
+    .SetShapeFn([](InferenceContext* c) {
+      c->set_output(0, c->input(1));
+      return Status::OK();
+    });
+
+// --------------------------------------------------------------------------
+REGISTER_OP("ScaleAndTranslateGrad")
+    .Input("grads: T")
+    .Input("original_image: T")
+    .Input("scale: float")
+    .Input("translation: float")
+    .Output("output: T")
+    .Attr("T: {float}")
+    .Attr("kernel_type: string = 'lanczos3'")
     .SetShapeFn([](InferenceContext* c) {
       c->set_output(0, c->input(1));
       return Status::OK();
@@ -381,9 +408,10 @@ REGISTER_OP("AdjustContrast")
 
 // --------------------------------------------------------------------------
 REGISTER_OP("AdjustContrastv2")
-    .Input("images: float")
+    .Input("images: T")
     .Input("contrast_factor: float")
-    .Output("output: float")
+    .Output("output: T")
+    .Attr("T: {half, float} = DT_FLOAT")
     .SetShapeFn([](InferenceContext* c) {
       // The contrast_factor should be scalar only.
       ShapeHandle unused;
@@ -393,18 +421,20 @@ REGISTER_OP("AdjustContrastv2")
 
 // --------------------------------------------------------------------------
 REGISTER_OP("AdjustHue")
-    .Input("images: float")
+    .Input("images: T")
     .Input("delta: float")
-    .Output("output: float")
+    .Output("output: T")
+    .Attr("T: {half, float} = DT_FLOAT")
     .SetShapeFn([](InferenceContext* c) {
       return shape_inference::UnchangedShapeWithRankAtLeast(c, 3);
     });
 
 // --------------------------------------------------------------------------
 REGISTER_OP("AdjustSaturation")
-    .Input("images: float")
+    .Input("images: T")
     .Input("scale: float")
-    .Output("output: float")
+    .Output("output: T")
+    .Attr("T: {half, float} = DT_FLOAT")
     .SetShapeFn([](InferenceContext* c) {
       return shape_inference::UnchangedShapeWithRankAtLeast(c, 3);
     });
@@ -683,11 +713,12 @@ REGISTER_OP("NonMaxSuppression")
     });
 
 REGISTER_OP("NonMaxSuppressionV2")
-    .Input("boxes: float")
-    .Input("scores: float")
+    .Input("boxes: T")
+    .Input("scores: T")
     .Input("max_output_size: int32")
     .Input("iou_threshold: float")
     .Output("selected_indices: int32")
+    .Attr("T: {half, float} = DT_FLOAT")
     .SetShapeFn([](InferenceContext* c) {
       // Get inputs and validate ranks.
       ShapeHandle boxes;
@@ -711,22 +742,24 @@ REGISTER_OP("NonMaxSuppressionV2")
     });
 
 REGISTER_OP("NonMaxSuppressionV3")
-    .Input("boxes: float")
-    .Input("scores: float")
+    .Input("boxes: T")
+    .Input("scores: T")
     .Input("max_output_size: int32")
     .Input("iou_threshold: float")
     .Input("score_threshold: float")
     .Output("selected_indices: int32")
+    .Attr("T: {half, float} = DT_FLOAT")
     .SetShapeFn(NMSShapeFn);
 
 REGISTER_OP("NonMaxSuppressionV4")
-    .Input("boxes: float")
-    .Input("scores: float")
+    .Input("boxes: T")
+    .Input("scores: T")
     .Input("max_output_size: int32")
     .Input("iou_threshold: float")
     .Input("score_threshold: float")
     .Output("selected_indices: int32")
     .Output("valid_outputs: int32")
+    .Attr("T: {half, float} = DT_FLOAT")
     .Attr("pad_to_max_output_size: bool = false")
     .SetShapeFn([](InferenceContext* c) {
       TF_RETURN_IF_ERROR(NMSShapeFn(c));

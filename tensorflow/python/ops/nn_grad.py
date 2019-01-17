@@ -18,16 +18,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_nn_ops
-from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
-from tensorflow.python.ops import sparse_ops
 
 
 @ops.RegisterGradient("Conv2DBackpropInput")
@@ -315,10 +314,10 @@ def _BiasAddGradGrad(op, received_grad):
 
   if data_format == b"NCHW":
     expanded_shape = array_ops.concat([
-        array_ops.ones_like(shape[:-3]), bias_shape,
-        array_ops.ones_like(shape[-2:])
+        array_ops.ones_like(shape[:1]), bias_shape,
+        array_ops.ones_like(shape[2:])
     ], 0)
-    tile_mults = array_ops.concat([shape[:-3], [1], shape[-2:]], 0)
+    tile_mults = array_ops.concat([shape[:1], [1], shape[2:]], 0)
   else:
     expanded_shape = array_ops.concat(
         [array_ops.ones_like(shape[:-1]), bias_shape], 0)
@@ -387,6 +386,21 @@ def _Relu6Grad(op, grad):
 def _Relu6GradGrad(op, grad):
   x = op.inputs[1]
   return (gen_nn_ops.relu6_grad(grad, x),
+          array_ops.zeros(shape=array_ops.shape(x), dtype=x.dtype))
+
+
+@ops.RegisterGradient("LeakyRelu")
+def _LeakyReluGrad(op, grad):
+  x = op.inputs[0]
+  alpha = op.get_attr("alpha")
+  return gen_nn_ops.leaky_relu_grad(grad, x, alpha=alpha)
+
+
+@ops.RegisterGradient("LeakyReluGrad")
+def _LeakyReluGradGrad(op, grad):
+  x = op.inputs[1]
+  alpha = op.get_attr("alpha")
+  return (gen_nn_ops.leaky_relu_grad(grad, x, alpha=alpha),
           array_ops.zeros(shape=array_ops.shape(x), dtype=x.dtype))
 
 
@@ -500,29 +514,40 @@ def _SparseSoftmaxCrossEntropyWithLogitsGrad(op, grad_0, _):
 
 @ops.RegisterGradient("Conv2D")
 def _Conv2DGrad(op, grad):
+  """Gradient function for Conv2D."""
   dilations = op.get_attr("dilations")
   strides = op.get_attr("strides")
   padding = op.get_attr("padding")
+  explicit_paddings = op.get_attr("explicit_paddings")
   use_cudnn_on_gpu = op.get_attr("use_cudnn_on_gpu")
   data_format = op.get_attr("data_format")
   shape_0, shape_1 = array_ops.shape_n([op.inputs[0], op.inputs[1]])
+
+  # We call the gen_nn_ops backprop functions instead of nn_ops backprop
+  # functions for performance reasons in Eager mode. gen_nn_ops functions take a
+  # `explicit_paddings` parameter, but nn_ops functions do not. So if were were
+  # to use the nn_ops functions, we would have to convert `padding` and
+  # `explicit_paddings` into a single `padding` parameter, increasing overhead
+  # in Eager mode.
   return [
-      nn_ops.conv2d_backprop_input(
+      gen_nn_ops.conv2d_backprop_input(
           shape_0,
           op.inputs[1],
           grad,
           dilations=dilations,
           strides=strides,
           padding=padding,
+          explicit_paddings=explicit_paddings,
           use_cudnn_on_gpu=use_cudnn_on_gpu,
           data_format=data_format),
-      nn_ops.conv2d_backprop_filter(
+      gen_nn_ops.conv2d_backprop_filter(
           op.inputs[0],
           shape_1,
           grad,
           dilations=dilations,
           strides=strides,
           padding=padding,
+          explicit_paddings=explicit_paddings,
           use_cudnn_on_gpu=use_cudnn_on_gpu,
           data_format=data_format)
   ]
@@ -934,10 +959,14 @@ def _FusedBatchNormGradGrad(op, *grad):
   grad_grad_x = grad[0]
   grad_grad_scale = grad[1]
   grad_grad_offset = grad[2]
-  grad_x, grad_scale, grad_offset = _BatchNormGrad(
-      grad_y, x, scale, pop_mean, pop_var, epsilon, data_format, is_training)
-  grad_initial = [grad_grad_x, grad_grad_scale, grad_grad_offset]
-  grad_grad_y, grad_x, grad_scale = gradients_impl.gradients(
+  with backprop.GradientTape() as tape:
+    tape.watch(grad_y)
+    tape.watch(x)
+    tape.watch(scale)
+    grad_x, grad_scale, grad_offset = _BatchNormGrad(
+        grad_y, x, scale, pop_mean, pop_var, epsilon, data_format, is_training)
+    grad_initial = [grad_grad_x, grad_grad_scale, grad_grad_offset]
+  grad_grad_y, grad_x, grad_scale = tape.gradient(
       [grad_x, grad_scale, grad_offset], [grad_y, x, scale], grad_initial)
   return grad_grad_y, grad_x, grad_scale, None, None
 
@@ -977,25 +1006,30 @@ def _TopKGrad(op, grad, _):
   in_shape = array_ops.shape(op.inputs[0])
   ind_shape = array_ops.shape(op.outputs[1])
 
-  ind_lastdim = array_ops.gather(ind_shape, array_ops.size(ind_shape) - 1)
+  # int32 is not supported on GPU hence up-casting
+  ind_lastdim = array_ops.gather(math_ops.cast(
+      ind_shape, dtypes.int64), array_ops.size(ind_shape) - 1)
   # Flatten indices to 2D.
   ind_2d = array_ops.reshape(op.outputs[1], array_ops.stack([-1, ind_lastdim]))
 
-  in_lastdim = array_ops.gather(in_shape, array_ops.size(in_shape) - 1)
+  in_lastdim = array_ops.gather(math_ops.cast(
+      in_shape, dtypes.int64), array_ops.size(in_shape) - 1)
   outerdim = array_ops.shape(ind_2d)[0]
   # Compute linear indices (flattened to 1D).
-  ind = array_ops.reshape(ind_2d + array_ops.expand_dims(
-      math_ops.range(0, outerdim * in_lastdim, in_lastdim), -1), [-1])
+  ind = array_ops.reshape(ind_2d + math_ops.cast(array_ops.expand_dims(
+      math_ops.range(0, math_ops.cast(outerdim, dtypes.int64)
+                     * in_lastdim, in_lastdim), -1), dtypes.int32), [-1])
 
   # Substitute grad to appropriate locations and fill the rest with zeros,
   # finally reshaping it to the original input shape.
   return [
       array_ops.reshape(
-          sparse_ops.sparse_to_dense(
-              ind,
-              array_ops.reshape(math_ops.reduce_prod(in_shape), [1]),
+          array_ops.scatter_nd(
+              array_ops.expand_dims(ind, -1),
               array_ops.reshape(grad, [-1]),
-              validate_indices=False), in_shape),
+              [math_ops.reduce_prod(in_shape)]
+          ),
+          in_shape),
       array_ops.zeros([], dtype=dtypes.int32)
   ]
 

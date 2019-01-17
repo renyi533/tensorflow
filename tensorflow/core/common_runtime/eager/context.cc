@@ -15,8 +15,14 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/eager/context.h"
 
+#include "tensorflow/core/common_runtime/collective_executor_mgr.h"
+#include "tensorflow/core/common_runtime/collective_param_resolver_local.h"
+#include "tensorflow/core/common_runtime/device_resolver_local.h"
 #include "tensorflow/core/common_runtime/device_set.h"
 #include "tensorflow/core/common_runtime/process_util.h"
+#include "tensorflow/core/distributed_runtime/collective_param_resolver_distributed.h"
+#include "tensorflow/core/distributed_runtime/device_resolver_distributed.h"
+#include "tensorflow/core/distributed_runtime/rpc_collective_executor_mgr.h"
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/util/env_var.h"
@@ -26,7 +32,7 @@ namespace {
 
 bool ReadBoolFromEnvVar(StringPiece env_var_name, bool default_val) {
   bool val;
-  if (ReadBoolFromEnvVar(env_var_name, default_val, &val).ok()) {
+  if (tensorflow::ReadBoolFromEnvVar(env_var_name, default_val, &val).ok()) {
     return val;
   }
   return default_val;
@@ -36,30 +42,48 @@ bool ReadBoolFromEnvVar(StringPiece env_var_name, bool default_val) {
 
 EagerContext::EagerContext(const SessionOptions& opts,
                            ContextDevicePlacementPolicy default_policy,
-                           bool async, std::unique_ptr<DeviceMgr> device_mgr,
+                           bool async,
+                           std::unique_ptr<const DeviceMgr> device_mgr,
                            Rendezvous* rendezvous)
+    : EagerContext(opts, default_policy, async, device_mgr.release(),
+                   /*device_mgr_owned*/ true, rendezvous) {}
+
+EagerContext::EagerContext(const SessionOptions& opts,
+                           ContextDevicePlacementPolicy default_policy,
+                           bool async, const DeviceMgr* device_mgr,
+                           bool device_mgr_owned, Rendezvous* rendezvous)
     : policy_(default_policy),
-      local_device_manager_(std::move(device_mgr)),
-      local_unowned_device_manager_(nullptr),
-      devices_(local_device_manager_->ListDevices()),
+      devices_(device_mgr->ListDevices()),
       rendezvous_(rendezvous),
       thread_pool_(NewThreadPoolFromSessionOptions(opts)),
       pflr_(new ProcessFunctionLibraryRuntime(
-          local_device_manager_.get(), opts.env, TF_GRAPH_DEF_VERSION,
-          &func_lib_def_, {}, thread_pool_.get())),
+          device_mgr, opts.env, TF_GRAPH_DEF_VERSION, &func_lib_def_, {},
+          thread_pool_.get())),
       log_device_placement_(opts.config.log_device_placement()),
       num_active_steps_(0),
       async_default_(async),
+      log_memory_(LogMemory::IsEnabled()),
       env_(opts.env),
-      use_send_tensor_rpc_(false) {
-  InitDeviceMapAndAsync();
-  if (opts.config.inter_op_parallelism_threads() > 0) {
-    runner_ = [this](std::function<void()> closure) {
-      this->thread_pool_->Schedule(closure);
-    };
+      use_send_tensor_rpc_(false),
+      pin_small_ops_to_cpu_(ReadBoolFromEnvVar(
+          "TF_EAGER_ENABLE_SMALL_TENSOR_CPU_PINNING", true)) {
+  if (device_mgr_owned) {
+    local_device_manager_.reset(device_mgr);
+    local_unowned_device_manager_ = nullptr;
   } else {
-    runner_ = [](std::function<void()> closure) { closure(); };
+    local_unowned_device_manager_ = device_mgr;
   }
+  InitDeviceMapAndAsync();
+  runner_ = [this](std::function<void()> closure) {
+    this->thread_pool_->Schedule(std::move(closure));
+  };
+
+  std::unique_ptr<DeviceResolverInterface> drl(
+      new DeviceResolverLocal(local_device_mgr()));
+  std::unique_ptr<ParamResolverInterface> cprl(new CollectiveParamResolverLocal(
+      local_device_mgr(), drl.get(), "/job:localhost/replica:0/task:0"));
+  collective_executor_mgr_.reset(new CollectiveExecutorMgr(
+      opts.config, local_device_mgr(), std::move(drl), std::move(cprl)));
 }
 
 void EagerContext::InitDeviceMapAndAsync() {
@@ -210,6 +234,29 @@ Status EagerContext::FindDeviceByName(const string& name, Device** result) {
   return Status::OK();
 }
 
+void EagerContext::ClearRunMetadata() {
+  if (metadata_listener_ != nullptr) {
+    metadata_listener_->BeforeClearRunMetadata();
+  }
+  run_metadata_.Clear();
+}
+
+Status EagerContext::RegisterRunMetadataListener(
+    RunMetadataListener* listener) {
+  mutex_lock l(metadata_mu_);
+  if (metadata_listener_ != nullptr) {
+    return Status(error::Code::INVALID_ARGUMENT,
+                  "Cannot run two eager profiler at the same time");
+  }
+  metadata_listener_ = listener;
+  return Status::OK();
+}
+
+void EagerContext::ClearRunMetadataListener() {
+  mutex_lock l(metadata_mu_);
+  metadata_listener_ = nullptr;
+}
+
 void EagerContext::StartStep() {
   mutex_lock ml(metadata_mu_);
   num_active_steps_++;
@@ -293,10 +340,15 @@ void EagerContext::AddKernelToCache(Fprint128 cache_key,
   gtl::InsertOrUpdate(&kernel_cache_, cache_key, kernel);
 }
 
+bool EagerContext::ShouldStoreMetadata() {
+  mutex_lock ml(metadata_mu_);
+  return should_store_metadata_.load() || metadata_listener_ != nullptr;
+}
+
 void EagerContext::SetShouldStoreMetadata(bool value) {
+  mutex_lock ml(metadata_mu_);
   should_store_metadata_.store(value);
-  if (!value) {
-    mutex_lock ml(metadata_mu_);
+  if (!value || metadata_listener_ != nullptr) {
     run_metadata_.Clear();
   }
 }
@@ -339,6 +391,36 @@ Status EagerContext::GetClientAndContextID(Device* device,
   *context_id = context_iterator->second;
 
   device_to_client_cache_.insert({device, {*client, *context_id}});
+
+  return Status::OK();
+}
+
+Status EagerContext::StoreCollectiveOpsServer(
+    std::unique_ptr<ServerInterface> server, DeviceMgr* device_mgr,
+    CollectiveExecutorMgrInterface* rpc_collective_executor_mgr) {
+  collective_executor_mgr_.reset(nullptr);
+  unowned_collective_executor_mgr_ = rpc_collective_executor_mgr;
+
+  local_device_manager_.reset(nullptr);
+  local_unowned_device_manager_ = device_mgr;
+
+  devices_ = local_unowned_device_manager_->ListDevices();
+  devices_map_.clear();
+
+  InitDeviceMapAndAsync();
+  ClearCaches();
+
+  pflr_.reset(new ProcessFunctionLibraryRuntime(
+      local_unowned_device_manager_, env_, TF_GRAPH_DEF_VERSION, &func_lib_def_,
+      {}, thread_pool_.get()));
+
+  // Memory leak!
+  if (server_ != nullptr) {
+    LOG(WARNING) << "Unable to destroy server_ object, so releasing instead. "
+                    "Servers don't support clean shutdown.";
+    server_.release();
+  }
+  server_ = std::move(server);
 
   return Status::OK();
 }

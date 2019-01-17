@@ -20,13 +20,18 @@ from __future__ import print_function
 
 import numpy as np
 
+from tensorflow.core.protobuf import config_pb2
+from tensorflow.python.client import session
 from tensorflow.python.eager import context
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
 from tensorflow.python.ops import init_ops
-from tensorflow.python.ops import resource_variable_ops
+from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
 
 
+@test_util.run_all_in_graph_and_eager_modes
 class InitializersTest(test.TestCase):
 
   def _runner(self,
@@ -36,13 +41,8 @@ class InitializersTest(test.TestCase):
               target_std=None,
               target_max=None,
               target_min=None):
-    variable = resource_variable_ops.ResourceVariable(init(shape))
-    if context.executing_eagerly():
-      output = variable.numpy()
-    else:
-      sess = ops.get_default_session()
-      sess.run(variable.initializer)
-      output = sess.run(variable)
+    output = self.evaluate(init(shape))
+    self.assertEqual(output.shape, shape)
     lim = 3e-2
     if target_std is not None:
       self.assertGreater(lim, abs(output.std() - target_std))
@@ -162,6 +162,40 @@ class InitializersTest(test.TestCase):
     tensor_shape = (20, 20)
     with self.cached_session():
       self._runner(init_ops.Orthogonal(seed=123), tensor_shape, target_mean=0.)
+
+  def testVariablePlacementWithOrthogonalInitializer(self):
+    if not context.context().num_gpus():
+      self.skipTest('No devices other than CPUs found')
+    with ops.Graph().as_default() as g:
+      with ops.device('gpu:0'):
+        variable_scope.get_variable(
+            name='v', shape=[8, 2], initializer=init_ops.Orthogonal)
+        variable_scope.get_variable(
+            name='w', shape=[8, 2], initializer=init_ops.RandomNormal)
+      run_metadata = config_pb2.RunMetadata()
+      run_options = config_pb2.RunOptions(
+          trace_level=config_pb2.RunOptions.FULL_TRACE)
+      config = config_pb2.ConfigProto(
+          allow_soft_placement=False, log_device_placement=True)
+
+      # Note: allow_soft_placement=False will fail whenever we cannot satisfy
+      # the colocation constraints.
+      with session.Session(config=config, graph=g) as sess:
+        sess.run(
+            variables.global_variables_initializer(),
+            options=run_options,
+            run_metadata=run_metadata)
+
+  def test_eager_orthogonal_gpu(self):
+    if not context.context().num_gpus():
+      self.skipTest('No devices other than CPUs found')
+    with context.eager_mode():
+      v = variable_scope.get_variable(
+          name='v', shape=[8, 2], initializer=init_ops.Orthogonal)
+      w = variable_scope.get_variable(
+          name='w', shape=[8, 2], initializer=init_ops.RandomNormal)
+      self.assertTrue('GPU' in v.handle.device)
+      self.assertTrue('GPU' in w.handle.device)
 
   def test_Identity(self):
     with self.cached_session():

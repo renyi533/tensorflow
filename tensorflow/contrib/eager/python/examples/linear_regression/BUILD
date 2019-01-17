@@ -3,6 +3,7 @@ licenses(["notice"])  # Apache 2.0
 package(default_visibility = ["//tensorflow:internal"])
 
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("//tensorflow:tensorflow.bzl", "py_binary")
 
 py_binary(
     name = "linear_regression",
@@ -22,7 +23,10 @@ cuda_py_test(
         ":linear_regression",
         "//tensorflow:tensorflow_py",
     ],
-    tags = ["no_windows"],  # TODO: needs investigation on Windows
+    tags = [
+        "no_windows",  # TODO: needs investigation on Windows
+        "oss_serial",
+    ],
 )
 
 cuda_py_test(

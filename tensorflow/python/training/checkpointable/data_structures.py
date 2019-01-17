@@ -18,10 +18,13 @@ from __future__ import division
 from __future__ import print_function
 
 import collections
+import copy
+import operator
 
 import six
 
 from tensorflow.python.ops import variables
+from tensorflow.python.saved_model import revived_types
 from tensorflow.python.training.checkpointable import base
 from tensorflow.python.training.checkpointable import layer_utils
 
@@ -55,7 +58,7 @@ def _wrap_or_unwrap(value):
   """Wraps basic data structures, unwraps NoDependency objects."""
   if isinstance(value, NoDependency):
     return value.value
-  if isinstance(value, base.CheckpointableBase):
+  if isinstance(value, base.Checkpointable):
     return value  # Skip conversion for already checkpointable objects.
   elif isinstance(value, dict):
     return _DictWrapper(value)
@@ -96,7 +99,7 @@ def sticky_attribute_assignment(checkpointable, name, value):
   value = _wrap_or_unwrap(value)
   if not add_dependency:
     return value
-  if isinstance(value, base.CheckpointableBase):
+  if isinstance(value, base.Checkpointable):
     checkpointable._track_checkpointable(  # pylint: disable=protected-access
         value, name=name,
         # Allow the user to switch the Checkpointable which is tracked by this
@@ -106,13 +109,10 @@ def sticky_attribute_assignment(checkpointable, name, value):
   return value
 
 
-class CheckpointableDataStructure(base.CheckpointableBase):
+class CheckpointableDataStructure(base.Checkpointable):
   """Base class for data structures which contain checkpointable objects."""
 
   def __init__(self):
-    # An append-only ordered set
-    self._layers = []
-
     self.trainable = True
     self._extra_variables = []
 
@@ -122,25 +122,34 @@ class CheckpointableDataStructure(base.CheckpointableBase):
         checkpointable=self, value=value, name=name)
     if isinstance(value, variables.Variable):
       self._extra_variables.append(value)
-    if not isinstance(value, base.CheckpointableBase):
+    if not isinstance(value, base.Checkpointable):
       raise ValueError(
           ("Only checkpointable objects (such as Layers or Optimizers) may be "
            "stored in a List object. Got %s, which does not inherit from "
-           "CheckpointableBase.") % (value,))
-    if (isinstance(value, CheckpointableDataStructure)
-        or layer_utils.is_layer(value)
-        or layer_utils.has_weights(value)):
-      # Check for object-identity rather than with __eq__ to avoid
-      # de-duplicating empty container types. Automatically generated list
-      # wrappers keep things like "[] == []" true, which means "[] in [[]]" is
-      # also true. This becomes not true once one of the lists is mutated.
-      if not any((layer is value for layer in self._layers)):
-        self._layers.append(value)
-        if hasattr(value, "_use_resource_variables"):
-          # In subclassed models, legacy layers (tf.layers) must always use
-          # resource variables.
-          value._use_resource_variables = True  # pylint: disable=protected-access
+           "Checkpointable.") % (value,))
+    if hasattr(value, "_use_resource_variables"):
+      # In subclassed models, legacy layers (tf.layers) must always use
+      # resource variables.
+      value._use_resource_variables = True  # pylint: disable=protected-access
     return value
+
+  @property
+  def _values(self):
+    """An iterable/sequence which may contain checkpointable objects."""
+    raise NotImplementedError("Abstract method")
+
+  @property
+  def _layers(self):
+    """All Layers and Layer containers, including empty containers."""
+    # Filter objects on demand so that wrapper objects use values from the thing
+    # they're wrapping if out of sync.
+    collected = []
+    for obj in self._values:
+      if (isinstance(obj, CheckpointableDataStructure)
+          or layer_utils.is_layer(obj)
+          or layer_utils.has_weights(obj)):
+        collected.append(obj)
+    return collected
 
   @property
   def layers(self):
@@ -251,12 +260,22 @@ class List(CheckpointableDataStructure, collections.Sequence):
       self._storage[index] = self._track_value(
           element, name=self._name_element(index))
 
+  def __copy__(self):
+    return type(self)(copy.copy(self._storage))
+
+  def __deepcopy__(self, memo):
+    return type(self)(copy.deepcopy(self._storage, memo))
+
   def _make_storage(self, *args, **kwargs):
     """Determines the backing storage (overridden in subclasses)."""
     return list(*args, **kwargs)
 
   def _name_element(self, index):
     return "%d" % (index,)
+
+  @property
+  def _values(self):
+    return self
 
   def append(self, value):
     """Add a new checkpointable value."""
@@ -284,6 +303,9 @@ class List(CheckpointableDataStructure, collections.Sequence):
 
   def __getitem__(self, key):
     return self._storage[key]
+
+  def __getslice__(self, i, j):
+    return self._storage[slice(i, j)]
 
   def __len__(self):
     return len(self._storage)
@@ -324,6 +346,20 @@ class _ListWrapper(List, collections.MutableSequence,
     self._external_modification = False
     super(_ListWrapper, self).__init__(wrapped_list)
     self._last_wrapped_list_snapshot = list(self._storage)
+
+  # pylint: disable=protected-access
+  def __copy__(self):
+    copied = super(_ListWrapper, self).__copy__()
+    copied._non_append_mutation = self._non_append_mutation
+    copied._external_modification = self._external_modification
+    return copied
+
+  def __deepcopy__(self, memo):
+    copied = super(_ListWrapper, self).__deepcopy__(memo)
+    copied._non_append_mutation = self._non_append_mutation
+    copied._external_modification = self._external_modification
+    return copied
+  # pylint: enable=protected-access
 
   def _make_storage(self, wrapped_list):
     """Use the user's original list for storage."""
@@ -373,8 +409,11 @@ class _ListWrapper(List, collections.MutableSequence,
     del self._storage[key]
 
   def __setitem__(self, key, value):
-    self._non_append_mutation = True
-    self._storage[key] = value
+    self._check_external_modification()
+    if isinstance(self._storage[key], base.Checkpointable):
+      self._non_append_mutation = True
+    self._storage[key] = self._track_value(value, self._name_element(key))
+    self._update_snapshot()
 
   def append(self, value):
     """Add a new checkpointable value."""
@@ -449,8 +488,22 @@ class Mapping(CheckpointableDataStructure, collections.Mapping):
             value, name=self._name_element(key))
          for key, value in self._storage.items()})
 
+  def __copy__(self):
+    return type(self)(copy.copy(self._storage))
+
+  def __deepcopy__(self, memo):
+    return type(self)(copy.deepcopy(self._storage, memo))
+
   def _make_storage(self, *args, **kwargs):
     return dict(*args, **kwargs)
+
+  @property
+  def _values(self):
+    # Sort items deterministically by key
+    ordered = list(zip(*sorted(self.items(), key=lambda it: it[0])))
+    if ordered:
+      return ordered[1]
+    return []
 
   def _name_element(self, key):
     if not isinstance(key, six.string_types):
@@ -524,6 +577,22 @@ class _DictWrapper(Mapping, collections.MutableMapping):
     self._external_modification = False
     super(_DictWrapper, self).__init__(wrapped_dict)
     self._update_snapshot()
+
+  # pylint: disable=protected-access
+  def __copy__(self):
+    copied = super(_DictWrapper, self).__copy__()
+    copied._non_append_mutation = self._non_append_mutation
+    copied._external_modification = self._external_modification
+    copied._non_string_key = self._non_string_key
+    return copied
+
+  def __deepcopy__(self, memo):
+    copied = super(_DictWrapper, self).__deepcopy__(memo)
+    copied._non_append_mutation = self._non_append_mutation
+    copied._external_modification = self._external_modification
+    copied._non_string_key = self._non_string_key
+    return copied
+  # pylint: enable=protected-access
 
   def _make_storage(self, wrapped_dict):
     """Re-use the wrapped dict for storage (to force them to be in sync)."""
@@ -624,14 +693,14 @@ class _DictWrapper(Mapping, collections.MutableMapping):
     else:
       value = _wrap_or_unwrap(value)
       existing_dependency = None
-      if not no_dep and isinstance(value, base.CheckpointableBase):
+      if not no_dep and isinstance(value, base.Checkpointable):
         # Non-string keys are OK as long as we have no reason to add a
         # dependency on the value (either because the value is not
         # checkpointable, or because it was wrapped in a NoDependency object).
         self._non_string_key = True
     current_value = self._storage.setdefault(key, value)
     if current_value is not value:
-      if ((not no_dep and isinstance(value, base.CheckpointableBase))
+      if ((not no_dep and isinstance(value, base.Checkpointable))
           # We don't want to just check that the existing object is
           # checkpointable, since it may have been wrapped in a NoDependency
           # object.
@@ -647,7 +716,7 @@ class _DictWrapper(Mapping, collections.MutableMapping):
   def __delitem__(self, key):
     self._check_external_modification()
     existing_value = self[key]
-    if isinstance(existing_value, base.CheckpointableBase):
+    if isinstance(existing_value, base.Checkpointable):
       # Deleting tracked checkpointable values means restoring is problematic,
       # so we'll throw an exception on save.
       self._non_append_mutation = True
@@ -666,3 +735,33 @@ class _DictWrapper(Mapping, collections.MutableMapping):
   def update(self, *args, **kwargs):
     for key, value in dict(*args, **kwargs).items():
       self[key] = value
+
+revived_types.register_revived_type(
+    "checkpointable_dict_wrapper",
+    lambda obj: isinstance(obj, _DictWrapper),
+    versions=[revived_types.VersionedTypeRegistration(
+        # Standard dependencies are enough to reconstruct the checkpointable
+        # items in dictionaries, so we don't need to save any extra information.
+        object_factory=lambda proto: _DictWrapper({}),
+        version=1,
+        min_producer_version=1,
+        min_consumer_version=1,
+        setter=operator.setitem)])
+
+
+def _set_list_item(list_object, index_string, value):
+  item_index = int(index_string)
+  if len(list_object) <= item_index:
+    list_object.extend([None] * (1 + item_index - len(list_object)))
+  list_object[item_index] = value
+
+
+revived_types.register_revived_type(
+    "checkpointable_list_wrapper",
+    lambda obj: isinstance(obj, _ListWrapper),
+    versions=[revived_types.VersionedTypeRegistration(
+        object_factory=lambda proto: _ListWrapper([]),
+        version=1,
+        min_producer_version=1,
+        min_consumer_version=1,
+        setter=_set_list_item)])

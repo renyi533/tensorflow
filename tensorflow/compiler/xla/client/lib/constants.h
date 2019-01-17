@@ -37,13 +37,13 @@ XlaOp ConstantR0WithType(XlaBuilder* builder, PrimitiveType type, T value) {
         primitive_util::IsComplexType(type))) {
     return builder->ReportError(InvalidArgument(
         "Invalid cast from floating point type to %s in ConstantR0WithType.",
-        PrimitiveType_Name(type).c_str()));
+        PrimitiveType_Name(type)));
   }
   if (std::is_same<T, complex64>::value &&
       !primitive_util::IsComplexType(type)) {
     return builder->ReportError(InvalidArgument(
         "Invalid cast from complex type to %s in ConstantR0WithType.",
-        PrimitiveType_Name(type).c_str()));
+        PrimitiveType_Name(type)));
   }
   switch (type) {
     case F16:
@@ -56,6 +56,8 @@ XlaOp ConstantR0WithType(XlaBuilder* builder, PrimitiveType type, T value) {
       return ConstantR0<double>(builder, static_cast<double>(value));
     case C64:
       return ConstantR0<complex64>(builder, static_cast<complex64>(value));
+    case C128:
+      return ConstantR0<complex128>(builder, static_cast<complex128>(value));
     case U8:
       return ConstantR0<uint8>(builder, static_cast<uint8>(value));
     case U32:
@@ -71,7 +73,7 @@ XlaOp ConstantR0WithType(XlaBuilder* builder, PrimitiveType type, T value) {
     default:
       return builder->ReportError(
           InvalidArgument("Invalid type for ConstantR0WithType (%s).",
-                          PrimitiveType_Name(type).c_str()));
+                          PrimitiveType_Name(type)));
   }
 }
 

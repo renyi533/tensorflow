@@ -3,6 +3,7 @@ licenses(["notice"])  # Apache 2.0
 package(default_visibility = ["//tensorflow:internal"])
 
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("//tensorflow:tensorflow.bzl", "py_binary")
 
 py_binary(
     name = "rnn_ptb",
@@ -33,5 +34,8 @@ cuda_py_test(
         ":rnn_ptb",
         "//third_party/py/numpy",
         "//tensorflow:tensorflow_py",
+    ],
+    tags = [
+        "oss_serial",
     ],
 )

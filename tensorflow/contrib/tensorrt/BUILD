@@ -19,6 +19,7 @@ load(
     "tf_gen_op_libs",
     "tf_gen_op_wrapper_py",
 )
+load("//tensorflow:tensorflow.bzl", "cuda_py_test")
 load("//tensorflow:tensorflow.bzl", "cuda_py_tests")
 load("//tensorflow:tensorflow.bzl", "tf_cuda_cc_test")
 load("//tensorflow:tensorflow.bzl", "tf_custom_op_py_library")
@@ -27,6 +28,10 @@ load(
     "@local_config_tensorrt//:build_defs.bzl",
     "if_tensorrt",
 )
+
+exports_files(glob([
+    "test/testdata/*",
+]))
 
 tf_cuda_cc_test(
     name = "tensorrt_test_cc",
@@ -49,8 +54,9 @@ tf_cuda_cc_test(
 )
 
 tf_custom_op_library(
-    name = "python/ops/_trt_engine_op.so",
+    name = "python/ops/_trt_ops.so",
     srcs = [
+        "ops/get_serialized_resource_op.cc",
         "ops/trt_engine_op.cc",
     ],
     deps = [
@@ -75,8 +81,9 @@ tf_cuda_library(
 )
 
 cc_library(
-    name = "trt_engine_op_kernel",
+    name = "trt_op_kernels",
     srcs = [
+        "kernels/get_serialized_resource_op.cc",
         "kernels/trt_engine_op.cc",
     ],
     hdrs = [
@@ -92,6 +99,7 @@ cc_library(
         ":trt_plugins",
         ":trt_resources",
         ":utils",
+        "@com_google_absl//absl/memory",
         "//tensorflow/core:gpu_headers_lib",
         "//tensorflow/core:lib_proto_parsing",
         "//tensorflow/core:stream_executor_headers_lib",
@@ -103,9 +111,33 @@ cc_library(
     alwayslink = 1,  # buildozer: disable=alwayslink-with-hdrs
 )
 
+tf_cuda_cc_test(
+    name = "get_serialized_resource_op_test",
+    size = "small",
+    srcs = ["kernels/get_serialized_resource_op_test.cc"],
+    tags = [
+        "no_cuda_on_cpu_tap",
+        "no_windows",
+        "nomac",
+    ],
+    deps = [
+        ":get_serialized_resource_op_op_lib",
+        ":trt_op_kernels",
+        ":trt_resources",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+        "//tensorflow/core/kernels:ops_testutil",
+    ],
+)
+
 tf_gen_op_libs(
     op_lib_names = [
         "trt_engine_op",
+        "get_serialized_resource_op",
     ],
 )
 
@@ -122,8 +154,9 @@ tf_cuda_library(
 )
 
 tf_gen_op_wrapper_py(
-    name = "trt_engine_op",
+    name = "trt_ops",
     deps = [
+        ":get_serialized_resource_op_op_lib",
         ":trt_engine_op_op_lib",
         ":trt_logging",
         ":trt_shape_function",
@@ -131,16 +164,17 @@ tf_gen_op_wrapper_py(
 )
 
 tf_custom_op_py_library(
-    name = "trt_engine_op_loader",
-    srcs = ["python/ops/trt_engine_op.py"],
+    name = "trt_ops_loader",
+    srcs = ["python/ops/trt_ops.py"],
     dso = [
-        ":python/ops/_trt_engine_op.so",
+        ":python/ops/_trt_ops.so",
     ] + if_tensorrt([
         "@local_config_tensorrt//:nv_infer",
     ]),
     kernels = [
-        ":trt_engine_op_kernel",
+        ":trt_op_kernels",
         ":trt_engine_op_op_lib",
+        ":get_serialized_resource_op_op_lib",
         ":trt_shape_function",
     ],
     srcs_version = "PY2AND3",
@@ -170,8 +204,8 @@ py_library(
     name = "trt_ops_py",
     srcs_version = "PY2AND3",
     deps = [
-        ":trt_engine_op",
-        ":trt_engine_op_loader",
+        ":trt_ops",
+        ":trt_ops_loader",
     ],
 )
 
@@ -181,7 +215,12 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":wrap_conversion",
+        "//tensorflow/python:graph_util",
+        "//tensorflow/python:session",
         "//tensorflow/python:tf_optimizer",
+        "//tensorflow/python/saved_model:builder",
+        "//tensorflow/python/saved_model:loader",
+        "//tensorflow/python/saved_model:tag_constants",
     ],
 )
 
@@ -197,7 +236,7 @@ tf_py_wrap_cc(
     deps = [
         ":test_utils",
         ":trt_conversion",
-        ":trt_engine_op_kernel",
+        ":trt_op_kernels",
         "//third_party/python_runtime:headers",
     ],
 )
@@ -207,9 +246,11 @@ tf_cuda_library(
     srcs = [
         "resources/trt_int8_calibrator.cc",
         "resources/trt_resource_manager.cc",
+        "resources/trt_resources.cc",
     ],
     hdrs = [
         "resources/trt_int8_calibrator.h",
+        "resources/trt_lru_cache.h",
         "resources/trt_resource_manager.h",
         "resources/trt_resources.h",
     ],
@@ -253,6 +294,21 @@ tf_cc_test(
     ],
 )
 
+tf_cc_test(
+    name = "trt_lru_cache_test",
+    size = "small",
+    srcs = ["resources/trt_lru_cache_test.cc"],
+    tags = [
+        "no_windows",
+        "nomac",
+    ],
+    deps = [
+        ":trt_resources",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+    ],
+)
+
 # Library for the node-level conversion portion of TensorRT operation creation
 tf_cuda_library(
     name = "trt_conversion",
@@ -279,6 +335,7 @@ tf_cuda_library(
         "//tensorflow/core/grappler/optimizers:custom_graph_optimizer_registry",
         "//tensorflow/core/grappler:grappler_item",
         "//tensorflow/core/grappler:utils",
+        "//tensorflow/core:framework",
         "//tensorflow/core:framework_lite",
         "//tensorflow/core:gpu_runtime",
         "//tensorflow/core:graph",
@@ -305,16 +362,53 @@ tf_cuda_cc_test(
     ],
     deps = [
         ":trt_conversion",
+        "@com_google_googletest//:gtest",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/cc:scope",
         "//tensorflow/core/grappler:grappler_item",
         "//tensorflow/core/grappler/clusters:cluster",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:direct_session",
+        "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
     ] + if_tensorrt([
+        "@local_config_tensorrt//:nv_infer",
+    ]),
+)
+
+tf_cuda_cc_test(
+    name = "convert_nodes_test",
+    size = "medium",
+    srcs = ["convert/convert_nodes_test.cc"],
+    tags = [
+        "no_cuda_on_cpu_tap",
+        "no_windows",
+        "nomac",
+    ],
+    deps = [
+        ":trt_logging",
+        ":trt_conversion",
+        ":trt_plugins",
+        "@com_google_googletest//:gtest",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/cc:ops",
+        "//tensorflow/cc:scope",
+        "//tensorflow/core/grappler/costs:graph_properties",
+        "//tensorflow/core:core_cpu",
+        "//tensorflow/core:core_cpu_base",
+        "//tensorflow/core:framework",
+        "//tensorflow/core:lib",
+        "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
+    ] + if_tensorrt([
+        "@local_config_cuda//cuda:cuda_headers",
         "@local_config_tensorrt//:nv_infer",
     ]),
 )
@@ -409,6 +503,31 @@ py_library(
     ],
 )
 
+cuda_py_test(
+    name = "trt_convert_test",
+    srcs = ["python/trt_convert_test.py"],
+    additional_deps = [
+        ":trt_convert_py",
+        ":trt_ops_py",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:graph_util",
+        "//tensorflow/python/saved_model:builder",
+        "//tensorflow/python/saved_model:loader",
+        "//tensorflow/python/saved_model:signature_constants",
+        "//tensorflow/python/saved_model:signature_def_utils",
+        "//tensorflow/python/saved_model:tag_constants",
+        "//tensorflow/python/saved_model:utils",
+        "//tensorflow/python/tools:freeze_graph_lib",
+        "//tensorflow/python/tools:saved_model_utils",
+    ],
+    tags = [
+        "no_cuda_on_cpu_tap",
+        "no_windows",
+        "nomac",
+    ],
+)
+
 cuda_py_tests(
     name = "tf_trt_integration_test",
     srcs = [
@@ -418,11 +537,19 @@ cuda_py_tests(
         "test/binary_tensor_weight_broadcast_test.py",
         "test/concatenation_test.py",
         "test/const_broadcast_test.py",
+        "test/conv2d_test.py",
+        "test/dynamic_input_shapes_test.py",
+        "test/identity_output_test.py",
+        "test/int32_test.py",
+        "test/lru_cache_test.py",
         "test/manual_test.py",
         "test/memory_alignment_test.py",
         "test/multi_connection_neighbor_engine_test.py",
         "test/neighboring_engine_test.py",
+        "test/quantization_test.py",
         "test/rank_two_test.py",
+        "test/reshape_transpose_test.py",
+        "test/topk_test.py",
         "test/unary_test.py",
         "test/vgg_block_nchw_test.py",
         "test/vgg_block_test.py",
@@ -439,12 +566,37 @@ cuda_py_tests(
     ],
 )
 
+cuda_py_test(
+    name = "quantization_mnist_test",
+    srcs = ["test/quantization_mnist_test.py"],
+    additional_deps = [
+        ":tf_trt_integration_test_base",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python/keras:keras",
+        "//tensorflow/python/estimator:estimator",
+    ],
+    data = [
+        "test/testdata/checkpoint",
+        "test/testdata/model.ckpt-46900.data-00000-of-00001",
+        "test/testdata/model.ckpt-46900.index",
+    ],
+    tags = [
+        "no_cuda_on_cpu_tap",
+        "no_pip",
+        "no_tap",  # It is not able to download the mnist data.
+        "no_windows",
+        "nomac",
+    ],
+)
+
 cc_library(
     name = "utils",
     srcs = ["convert/utils.cc"],
     hdrs = ["convert/utils.h"],
     copts = tf_copts(),
     deps = [
+        "//tensorflow/core:framework",
         "//tensorflow/core:lib",
     ],
 )

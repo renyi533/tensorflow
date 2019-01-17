@@ -24,6 +24,11 @@ py_library(
         exclude = ["python/learn/**/*_test.py"],
     ),
     srcs_version = "PY2AND3",
+    visibility = [
+        "//learning/brain:__subpackages__",
+        "//tensorflow:__subpackages__",
+        "//video/youtube/personalization:__subpackages__",
+    ],
     # This library should not depend on sklearn, even though some of the code
     # refers to it. (The code handles the presence of sklearn conditionally.)
     deps = [
@@ -269,6 +274,7 @@ py_test(
     name = "estimator_test",
     size = "medium",
     srcs = ["python/learn/estimators/estimator_test.py"],
+    shard_count = 2,
     srcs_version = "PY2AND3",
     tags = [
         "manual",
@@ -403,6 +409,7 @@ py_test(
     srcs = ["python/learn/estimators/dnn_test.py"],
     shard_count = 4,
     srcs_version = "PY2AND3",
+    tags = ["notap"],
     deps = [
         ":learn",
         "//tensorflow/contrib/layers:layers_py",

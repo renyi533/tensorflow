@@ -47,6 +47,9 @@ namespace xla {
 #define HLO_OPCODE_LIST(V)                                   \
   V(kAbs, "abs")                                             \
   V(kAdd, "add")                                             \
+  V(kAddDependency, "add-dependency")                        \
+  V(kAfterAll, "after-all", kHloOpcodeIsVariadic)            \
+  V(kAllReduce, "all-reduce")                                \
   V(kAllToAll, "all-to-all")                                 \
   V(kAtan2, "atan2")                                         \
   V(kBatchNormGrad, "batch-norm-grad")                       \
@@ -58,6 +61,7 @@ namespace xla {
   V(kCall, "call", kHloOpcodeIsVariadic)                     \
   V(kCeil, "ceil")                                           \
   V(kClamp, "clamp")                                         \
+  V(kCollectivePermute, "collective-permute")                \
   V(kClz, "count-leading-zeros")                             \
   V(kComplex, "complex")                                     \
   V(kConcatenate, "concatenate", kHloOpcodeIsVariadic)       \
@@ -67,7 +71,6 @@ namespace xla {
   V(kConvolution, "convolution")                             \
   V(kCopy, "copy")                                           \
   V(kCos, "cosine")                                          \
-  V(kCrossReplicaSum, "cross-replica-sum")                   \
   V(kCustomCall, "custom-call")                              \
   V(kDivide, "divide")                                       \
   V(kDomain, "domain")                                       \
@@ -82,7 +85,7 @@ namespace xla {
   V(kFusion, "fusion", kHloOpcodeIsVariadic)                 \
   V(kGather, "gather")                                       \
   V(kGe, "greater-than-or-equal-to", kHloOpcodeIsComparison) \
-  V(kAfterAll, "after-all", kHloOpcodeIsVariadic)            \
+  V(kGetDimensionSize, "get-dimension-size")                 \
   V(kGetTupleElement, "get-tuple-element")                   \
   V(kGt, "greater-than", kHloOpcodeIsComparison)             \
   V(kImag, "imag")                                           \

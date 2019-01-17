@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 // =============================================================================
+#include <vector>
+
 #include "tensorflow/contrib/boosted_trees/lib/utils/dropout_utils.h"
 #include "tensorflow/contrib/boosted_trees/proto/learner.pb.h"
 #include "tensorflow/contrib/boosted_trees/proto/split_info.pb.h"
@@ -380,8 +382,7 @@ class GrowTreeEnsembleOp : public OpKernel {
         break;
       }
       case LearnerConfig::OBLIVIOUS_DECISION_TREE: {
-        FindBestSplitsPerPartitionOblivious(context, gains_list, splits_list,
-                                            &best_splits);
+        FindBestSplitOblivious(context, gains_list, splits_list, &best_splits);
         break;
       }
     }
@@ -473,10 +474,10 @@ class GrowTreeEnsembleOp : public OpKernel {
     }
   }
 
-  void FindBestSplitsPerPartitionOblivious(
-      OpKernelContext* const context, const OpInputList& gains_list,
-      const OpInputList& splits_list,
-      std::map<int32, SplitCandidate>* best_splits) {
+  void FindBestSplitOblivious(OpKernelContext* const context,
+                              const OpInputList& gains_list,
+                              const OpInputList& splits_list,
+                              std::map<int32, SplitCandidate>* best_splits) {
     // Find best split per partition going through every feature candidate.
     for (int64 handler_id = 0; handler_id < num_handlers_; ++handler_id) {
       const auto& gains = gains_list[handler_id].vec<float>();
@@ -652,6 +653,12 @@ class GrowTreeEnsembleOp : public OpKernel {
       return dest;
     }
 
+    if (dest->leaf_case() == boosted_trees::trees::Leaf::LEAF_NOT_SET) {
+      // No merging is required. Just copy the source weights;
+      *dest = source;
+      return dest;
+    }
+
     // Handle leaf merging based on type.
     switch (source.leaf_case()) {
       case boosted_trees::trees::Leaf::kVector: {
@@ -772,20 +779,32 @@ class GrowTreeEnsembleOp : public OpKernel {
     // The number of new children.
     int num_children = 1 << (depth + 1);
     auto split_info = split->oblivious_split_info;
-    CHECK(num_children == split_info.children_size())
-        << "Wrong number of new children: " << num_children
-        << " != " << split_info.children_size();
-    for (int idx = 0; idx < num_children; idx += 2) {
-      // Old leaf is at position depth + idx / 2.
+    CHECK(num_children >= split_info.children_size())
+        << "Too many new children, expected <= " << num_children << " and got "
+        << split_info.children_size();
+    std::vector<trees::Leaf> new_leaves;
+    new_leaves.reserve(num_children);
+    int next_id = 0;
+    for (int idx = 0; idx < num_children / 2; idx++) {
       trees::Leaf old_leaf =
-          *tree_config->mutable_nodes(depth + idx / 2)->mutable_leaf();
-      // Update left leaf.
-      *split_info.mutable_children(idx) =
-          *MergeLeafWeights(old_leaf, split_info.mutable_children(idx));
-      // Update right leaf.
-      *split_info.mutable_children(idx + 1) =
-          *MergeLeafWeights(old_leaf, split_info.mutable_children(idx + 1));
+          *tree_config->mutable_nodes(depth + idx)->mutable_leaf();
+      // Check if a split was made for this leaf.
+      if (next_id < split_info.children_parent_id_size() &&
+          depth + idx == split_info.children_parent_id(next_id)) {
+        // Add left leaf.
+        new_leaves.push_back(*MergeLeafWeights(
+            old_leaf, split_info.mutable_children(2 * next_id)));
+        // Add right leaf.
+        new_leaves.push_back(*MergeLeafWeights(
+            old_leaf, split_info.mutable_children(2 * next_id + 1)));
+        next_id++;
+      } else {
+        // If there is no split for this leaf, just duplicate it.
+        new_leaves.push_back(old_leaf);
+        new_leaves.push_back(old_leaf);
+      }
     }
+    CHECK(next_id == split_info.children_parent_id_size());
     TreeNodeMetadata* split_metadata =
         split_info.mutable_split_node()->mutable_node_metadata();
     split_metadata->set_gain(split->gain);
@@ -804,11 +823,10 @@ class GrowTreeEnsembleOp : public OpKernel {
       if (idx + depth + 1 < nodes_size) {
         // Update leaves that were already there.
         *tree_config->mutable_nodes(idx + depth + 1)->mutable_leaf() =
-            *split_info.mutable_children(idx);
+            new_leaves[idx];
       } else {
         // Add new leaves.
-        *tree_config->add_nodes()->mutable_leaf() =
-            *split_info.mutable_children(idx);
+        *tree_config->add_nodes()->mutable_leaf() = new_leaves[idx];
       }
     }
   }
