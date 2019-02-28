@@ -256,7 +256,7 @@ class Conv2DTest(test.TestCase):
       tensors.append(_SetupVal(data_format, use_gpu))
     values = self.evaluate(tensors)
     for i in range(1, len(values)):
-      self.assertAllClose(values[0], values[i], rtol=1e-5, atol=1e-5)
+      self.assertAllClose(values[0], values[i], rtol=1e-3, atol=1e-3)
 
   def _ComputeReferenceDilatedConv(self, tensor_in_sizes, filter_in_sizes,
                                    stride, dilation, padding, data_format,
@@ -297,7 +297,7 @@ class Conv2DTest(test.TestCase):
     return expected, computed
 
   def _VerifyDilatedConvValues(self, tensor_in_sizes, filter_in_sizes, strides,
-                               padding, dilations):
+                               padding, dilations, rtol=1e-4):
     expected_results = []
     computed_results = []
     for data_format, use_gpu in GetTestConfigs():
@@ -313,7 +313,7 @@ class Conv2DTest(test.TestCase):
         tf_logging.debug("expected = %s", e_value)
         tf_logging.debug("actual = %s", c_value)
         self.assertAllClose(
-            e_value.flatten(), c_value.flatten(), atol=tolerance, rtol=1e-4)
+            e_value.flatten(), c_value.flatten(), atol=tolerance, rtol=rtol)
 
   def _VerifyValues(self,
                     tensor_in_sizes,
@@ -1161,6 +1161,7 @@ class Conv2DTest(test.TestCase):
       tf_logging.debug("actual = %s", value)
       self.assertArrayNear(value_2.flatten(), value.flatten(), err)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth3ValidBackpropFilterStride1x1Dilation2x1(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1175,6 +1176,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             err=1e-5)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth1ValidBackpropFilterDilation1x2(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1203,6 +1205,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             err=1e-5)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth3ValidBackpropFilterDilation2x2(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1231,6 +1234,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             err=1e-5)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth3ValidBackpropInputStride1x1Dilation2x1(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1245,6 +1249,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             err=1e-5)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth1ValidBackpropInputDilation1x2(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1273,6 +1278,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             err=1e-5)
 
+  @test_util.deprecated_graph_mode_only
   def testConv2D2x2Depth3ValidBackpropInputDilation2x1(self):
     if test.is_gpu_available(cuda_only=True) or test_util.IsMklEnabled():
       for (data_format, use_gpu) in GetTestConfigs():
@@ -1703,6 +1709,7 @@ class Conv2DTest(test.TestCase):
         tf_logging.debug("conv_2d gradient error = %s", err)
         self.assertLess(err, max_err)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientValidPaddingStrideOne(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1720,6 +1727,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientValidPaddingStrideOne(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1737,6 +1745,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientValidPaddingStrideTwo(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1754,6 +1763,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientValidPaddingStrideTwo(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1771,6 +1781,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientValidPaddingStrideThree(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1788,6 +1799,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientValidPaddingStrideThree(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1805,6 +1817,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientSamePaddingStrideOne(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1822,6 +1835,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientSamePaddingStrideOne(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1839,6 +1853,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientSamePaddingStrideTwo(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1856,6 +1871,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientSamePaddingStrideTwo(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1873,6 +1889,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientSamePaddingStrideThree(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1890,6 +1907,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientSamePaddingStrideThree(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1907,6 +1925,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientSamePaddingStride2x1(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1924,6 +1943,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradientKernelSizeMatchesInputSize(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1941,6 +1961,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradientKernelSizeMatchesInputSize(self):
     for (data_format, use_gpu) in GetTestConfigs():
       self.ConstructAndTestGradient(
@@ -1958,6 +1979,7 @@ class Conv2DTest(test.TestCase):
           data_format=data_format,
           use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient1x1PaddingStrideOne(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -1979,6 +2001,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             max_err=0.0025)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient1x1PaddingStrideOne(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -1999,6 +2022,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient1x1PaddingStrideTwo(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2019,6 +2043,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient1x1PaddingStrideTwo(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2039,6 +2064,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient2x2PaddingStrideOne(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2059,6 +2085,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient2x2PaddingStrideOne(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2080,6 +2107,7 @@ class Conv2DTest(test.TestCase):
             use_gpu=use_gpu,
             max_err=0.003)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient1_2_3_4PaddingStride3x2(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2100,6 +2128,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient1_2_3_4PaddingStride3x2(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2120,6 +2149,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient4_3_2_1PaddingStride2x1(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2140,6 +2170,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient4_3_2_1PaddingStride2x1(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2160,6 +2191,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testInputGradient0_0_0_5PaddingStride1x2(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2180,6 +2212,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testFilterGradient0_0_0_5PaddingStride1x2(self):
     if not test.is_gpu_available(cuda_only=True):
       return
@@ -2200,6 +2233,7 @@ class Conv2DTest(test.TestCase):
             data_format=data_format,
             use_gpu=use_gpu)
 
+  @test_util.deprecated_graph_mode_only
   def testShapeFunctionEdgeCases(self):
     # All shapes unknown.
     c1 = nn_ops.conv2d(
@@ -2286,6 +2320,8 @@ class Conv2DTest(test.TestCase):
           strides=[1, 1, 1, 1],
           padding=[0, 0, 0, 0])
 
+  @test_util.deprecated_graph_mode_only
+  @test_util.disable_xla("b/123337890")  # Error messages differ
   def testOpEdgeCases(self):
     with self.cached_session() as sess:
       # Illegal strides.
@@ -2891,7 +2927,8 @@ def GetInceptionFwdDilatedConvTest(input_size, filter_size, stride, padding):
           filter_in_sizes=filter_size,
           strides=[stride, stride],
           dilations=[2, 2],
-          padding=padding)
+          padding=padding,
+          rtol=5e-4)
 
   return Test
 
