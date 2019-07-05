@@ -18,9 +18,11 @@ limitations under the License.
 
 #include <algorithm>
 #include <vector>
+
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/core/framework/type_traits.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/types.h"
 
@@ -35,6 +37,10 @@ namespace tensor {
 // REQUIRES: 'other' must be a Tensor of a copy-able type if
 //           'other' is not appropriately memory-aligned.
 Tensor DeepCopy(const Tensor& other);
+
+// Deep copies input to output.  This function is similar to above, but assumes
+// that the memory for the output has already been allocated.
+void DeepCopy(const Tensor& input, Tensor* output);
 
 // Concatenates 'tensors' into a single tensor, along their 0th dimension.
 //
@@ -105,79 +111,88 @@ DEFINE_PROTO_FIELD_HELPER(quint16, int);
 DEFINE_PROTO_FIELD_HELPER(qint32, int);
 DEFINE_PROTO_FIELD_HELPER(Eigen::half, half);
 DEFINE_PROTO_FIELD_HELPER(bfloat16, half);
+DEFINE_PROTO_FIELD_HELPER(complex64, scomplex);
+DEFINE_PROTO_FIELD_HELPER(complex128, dcomplex);
 
 #undef DEFINE_PROTO_HELPER
 
-template <typename SrcIter, typename DstIter>
+template <typename T>
 struct CopyHelper {
-  void operator()(SrcIter begin, SrcIter end, DstIter dst) {
+  template <typename SrcIter, typename DstIter>
+  static void ToArray(SrcIter begin, SrcIter end, DstIter dst) {
     using SrcType = typename std::iterator_traits<SrcIter>::value_type;
     using DstType = typename std::iterator_traits<DstIter>::value_type;
     std::transform(begin, end, dst, [](const SrcType& x) -> DstType {
       return static_cast<DstType>(x);
     });
   }
-};
-
-template <>
-template <typename SrcIter>
-struct CopyHelper<SrcIter, SrcIter> {
-  void operator()(SrcIter begin, SrcIter end, SrcIter dst) {
+  template <typename SrcIter>
+  static void ToArray(SrcIter begin, SrcIter end, SrcIter dst) {
     std::copy(begin, end, dst);
+  }
+  template <typename SrcIter, typename DstIter>
+  static void FromArray(SrcIter begin, SrcIter end, DstIter dst) {
+    ToArray(begin, end, dst);
   }
 };
 
-// Overloads for Eigen::half and bfloat16 that are stored in 32 bit fields and
-// need to go via a reinterpret cast to uint16.
+// Overloads for Eigen::half and bfloat16 that are 16 bits in size but are
+// stored in an int32 field.
 template <>
-template <typename SrcIter>
-struct CopyHelper<SrcIter, Eigen::half*> {
-  void operator()(SrcIter begin, SrcIter end, Eigen::half* dst) {
-    using SrcType = typename std::iterator_traits<SrcIter>::value_type;
-    std::transform(begin, end, dst, [](SrcType x) -> Eigen::half {
+struct CopyHelper<Eigen::half> {
+  template <typename SrcIter>
+  static void ToArray(SrcIter begin, SrcIter end, Eigen::half* dst) {
+    std::transform(begin, end, dst, [](int x) -> Eigen::half {
       Eigen::half h;
       h.x = static_cast<uint16>(x);
       return h;
     });
   }
-};
-
-template <>
-template <typename DstIter>
-struct CopyHelper<const Eigen::half*, DstIter> {
-  void operator()(const Eigen::half* begin, const Eigen::half* end,
-                  DstIter dst) {
-    using DstType = typename std::iterator_traits<DstIter>::value_type;
-    std::transform(begin, end, dst, [](Eigen::half h) -> DstType {
-      return static_cast<DstType>(h.x);
-    });
+  template <typename SrcIter, typename DstIter>
+  static void FromArray(SrcIter begin, SrcIter end, DstIter dst) {
+    std::transform(begin, end, dst,
+                   [](Eigen::half h) -> int { return static_cast<int>(h.x); });
   }
 };
 
 template <>
-template <typename SrcIter>
-struct CopyHelper<SrcIter, bfloat16*> {
-  void operator()(SrcIter begin, SrcIter end, bfloat16* dst) {
-    using SrcType = typename std::iterator_traits<SrcIter>::value_type;
-    std::transform(begin, end, dst, [](SrcType x) -> bfloat16 {
+struct CopyHelper<bfloat16> {
+  template <typename SrcIter>
+  static void ToArray(SrcIter begin, SrcIter end, bfloat16* dst) {
+    std::transform(begin, end, dst, [](int x) -> bfloat16 {
       bfloat16 bf16;
       bf16.value = static_cast<uint16>(x);
       return bf16;
     });
   }
-};
-
-template <>
-template <typename DstIter>
-struct CopyHelper<const bfloat16*, DstIter> {
-  void operator()(const bfloat16* begin, const bfloat16* end, DstIter dst) {
-    using DstType = typename std::iterator_traits<DstIter>::value_type;
-    std::transform(begin, end, dst, [](bfloat16 bf16) -> DstType {
-      return static_cast<DstType>(bf16.value);
+  template <typename SrcIter, typename DstIter>
+  static void FromArray(SrcIter begin, SrcIter end, DstIter dst) {
+    std::transform(begin, end, dst, [](bfloat16 bf16) -> int {
+      return static_cast<int>(bf16.value);
     });
   }
 };
 
+// Overloads for complex types that store real and imaginary parts
+// at indices 2*i and 2*i+1 in float or double field.
+template <typename RealType>
+struct CopyHelper<std::complex<RealType>> {
+  template <typename SrcIter>
+  static void ToArray(SrcIter begin, SrcIter end, std::complex<RealType>* dst) {
+    RealType* real_dst = reinterpret_cast<RealType*>(dst);
+    std::copy(begin, end, real_dst);
+  }
+
+  template <typename SrcIter, typename DstIter>
+  static void FromArray(SrcIter begin, SrcIter end, DstIter dst) {
+    size_t n = std::distance(begin, end);
+    const RealType* real_begin = reinterpret_cast<const RealType*>(&(*begin));
+    std::copy_n(real_begin, 2 * n, dst);
+  }
+};
+
+// Helper class to extract and insert values into TensorProto represented as
+// repeated fields.
 template <typename T>
 class TensorProtoHelper : public std::true_type {
  public:
@@ -186,8 +201,10 @@ class TensorProtoHelper : public std::true_type {
 
   static DataType GetDataType() { return DataTypeToEnum<T>::value; }
 
+  // Returns the number of values of type T encoded in the proto.
   static size_t NumValues(const TensorProto& proto) {
-    return FieldHelper::GetField(proto).size();
+    size_t raw_size = FieldHelper::GetField(proto).size();
+    return is_complex<T>::value ? raw_size / 2 : raw_size;
   }
 
   static void AddValue(const T& value, TensorProto* proto) {
@@ -197,9 +214,10 @@ class TensorProtoHelper : public std::true_type {
 
   static T GetValue(size_t index, const TensorProto& proto) {
     T val;
-    CopyHelper<const FieldType*, T*>()(
-        FieldHelper::GetField(proto).begin() + index,
-        FieldHelper::GetField(proto).begin() + index + 1, &val);
+    if (is_complex<T>::value) index *= 2;
+    CopyHelper<T>::ToArray(FieldHelper::GetField(proto).begin() + index,
+                           FieldHelper::GetField(proto).begin() + index + 1,
+                           &val);
     return val;
   }
 
@@ -207,21 +225,22 @@ class TensorProtoHelper : public std::true_type {
   static void AddValues(IterType begin, IterType end, TensorProto* proto) {
     size_t n = std::distance(begin, end);
     FieldType* dst = AppendUninitialized(n, proto);
-    CopyHelper<IterType, FieldType*>()(begin, end, dst);
+    CopyHelper<T>::FromArray(begin, end, dst);
   }
 
   template <typename IterType>
   static void CopyValues(IterType dst, const TensorProto& proto) {
-    CopyHelper<const FieldType*, IterType>()(
-        FieldHelper::GetField(proto).begin(),
-        FieldHelper::GetField(proto).end(), dst);
+    CopyHelper<T>::ToArray(FieldHelper::GetField(proto).begin(),
+                           FieldHelper::GetField(proto).end(), dst);
   }
 
   static void Truncate(size_t new_size, TensorProto* proto) {
+    if (is_complex<T>::value) new_size *= 2;
     FieldHelper::GetMutableField(proto)->Truncate(new_size);
   }
 
   static FieldType* AppendUninitialized(size_t n, TensorProto* proto) {
+    if (is_complex<T>::value) n *= 2;
     auto* field = FieldHelper::GetMutableField(proto);
     field->Reserve(field->size() + n);
     return reinterpret_cast<FieldType*>(field->AddNAlreadyReserved(n));

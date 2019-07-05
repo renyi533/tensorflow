@@ -78,16 +78,19 @@ class CallTreeTransformer(converter.Base):
     full_name = str(anno.getanno(node.func, anno.Basic.QN, default=''))
     if full_name.startswith('ag__.'):
       return self.generic_visit(node)
+
+    # Calls to pdb.set_trace or ipdb.set_trace are never converted. We don't use
+    # the normal mechanisms to bypass these literals because they are sensitive
+    # to the frame they are being called from.
+    # TODO(mdan): Generalize this to a "static whitelist" config.
+    if full_name in ('pdb.set_trace', 'ipdb.set_trace'):
+      return self.generic_visit(node)
+
     if (full_name == 'print' and
         not self.ctx.program.options.uses(converter.Feature.BUILTIN_FUNCTIONS)):
       return self.generic_visit(node)
 
-    if isinstance(node.func, gast.Attribute):
-      func = gast.Str(node.func.attr)
-      owner = node.func.value
-    else:
-      func = node.func
-      owner = parser.parse_expression('None')
+    func = node.func
 
     starred_arg = None
     normal_args = []
@@ -96,6 +99,7 @@ class CallTreeTransformer(converter.Base):
         assert starred_arg is None, 'Multiple *args should be impossible.'
         starred_arg = a
       else:
+        a = self.visit(a)
         normal_args.append(a)
     if starred_arg is None:
       args = templates.replace_as_expression('(args,)', args=normal_args)
@@ -112,9 +116,13 @@ class CallTreeTransformer(converter.Base):
         assert kwargs_arg is None, 'Multiple **kwargs should be impossible.'
         kwargs_arg = k
       else:
+        k = self.visit(k)
         normal_keywords.append(k)
     if kwargs_arg is None:
-      kwargs = ast_util.keywords_to_dict(normal_keywords)
+      if not normal_keywords:
+        kwargs = parser.parse_expression('None')
+      else:
+        kwargs = ast_util.keywords_to_dict(normal_keywords)
     else:
       kwargs = templates.replace_as_expression(
           'dict(kwargs, **keywords)',
@@ -122,19 +130,33 @@ class CallTreeTransformer(converter.Base):
           keywords=ast_util.keywords_to_dict(normal_keywords))
 
     template = """
-      ag__.converted_call(func, owner, options, args, kwargs)
+      ag__.converted_call(func, options, args, kwargs)
     """
     new_call = templates.replace_as_expression(
         template,
         func=func,
-        owner=owner,
         options=self.ctx.program.options.to_ast(
-            self.ctx,
             internal_convert_user_code=self.ctx.program.options.recursive),
         args=args,
         kwargs=kwargs)
 
     return new_call
+
+  def visit_Print(self, node):
+    node = self.generic_visit(node)
+    args = node.values
+    # Following is the case when calling print(a, b)
+    if len(args) == 1 and isinstance(args[0], gast.Tuple):
+      args = args[0].elts
+
+    template = """
+      ag__.converted_call(func, None, options, args, {})
+    """
+    return templates.replace_as_expression(
+        template,
+        func='print',
+        options=self.ctx.program.options.to_ast(),
+        args=args)
 
 
 def transform(node, ctx):

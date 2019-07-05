@@ -26,7 +26,7 @@ from tensorflow.python.distribute.cluster_resolver import TFConfigClusterResolve
 
 
 # TODO(yuefengz): support in-graph replication.
-class CollectiveAllReduceStrategy(distribute_lib.DistributionStrategy):
+class CollectiveAllReduceStrategy(distribute_lib.StrategyV1):
   """Distribution strategy that uses collective ops for all-reduce.
 
   *** contrib version ***
@@ -78,7 +78,8 @@ class CollectiveAllReduceExtended(
         cluster_spec=tfconfig.cluster_spec(),
         task_type=tfconfig.task_type,
         task_id=tfconfig.task_id,
-        num_accelerators={"GPU": num_gpus_per_worker})
+        num_accelerators={"GPU": num_gpus_per_worker},
+        rpc_layer=tfconfig.rpc_layer)
     super(CollectiveAllReduceExtended, self).__init__(
         container_strategy,
         communication=communication,

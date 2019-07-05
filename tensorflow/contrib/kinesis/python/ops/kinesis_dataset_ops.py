@@ -35,7 +35,7 @@ class KinesisDataset(dataset_ops.DatasetSource):
 
   For example, we can construct and use the KinesisDataset as follows:
   ```python
-  tf.enable_eager_execution()
+  tf.compat.v1.enable_eager_execution()
 
   dataset = tf.contrib.kinesis.KinesisDataset(
       "kinesis_stream_name", read_indefinitely=False)
@@ -86,5 +86,5 @@ class KinesisDataset(dataset_ops.DatasetSource):
         self._stream, self._shard, self._read_indefinitely, self._interval)
 
   @property
-  def _element_structure(self):
+  def element_spec(self):
     return structure.TensorStructure(dtypes.string, [])

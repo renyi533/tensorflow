@@ -1,20 +1,21 @@
 # Description:
 # TensorFlow Java API.
 
-package(default_visibility = ["//visibility:private"])
-
-licenses(["notice"])  # Apache 2.0
-
 load(":build_defs.bzl", "JAVACOPTS")
 load(":src/gen/gen_ops.bzl", "tf_java_op_gen_srcjar")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_binary_additional_srcs",
     "tf_cc_binary",
+    "tf_cc_test",
     "tf_copts",
     "tf_custom_op_library",
     "tf_java_test",
-    "tf_cc_test",
+)
+
+package(
+    default_visibility = ["//visibility:private"],
+    licenses = ["notice"],  # Apache 2.0
 )
 
 java_library(
@@ -23,7 +24,7 @@ java_library(
         ":java_op_sources",
         ":java_sources",
     ],
-    data = [":libtensorflow_jni"],
+    data = [":libtensorflow_jni"] + tf_binary_additional_srcs(),
     javacopts = JAVACOPTS,
     plugins = [":processor"],
     visibility = ["//visibility:public"],
@@ -134,6 +135,45 @@ java_library(
 )
 
 tf_java_test(
+    name = "EagerSessionTest",
+    size = "small",
+    srcs = ["src/test/java/org/tensorflow/EagerSessionTest.java"],
+    javacopts = JAVACOPTS,
+    test_class = "org.tensorflow.EagerSessionTest",
+    deps = [
+        ":tensorflow",
+        ":testutil",
+        "@junit",
+    ],
+)
+
+tf_java_test(
+    name = "EagerOperationBuilderTest",
+    size = "small",
+    srcs = ["src/test/java/org/tensorflow/EagerOperationBuilderTest.java"],
+    javacopts = JAVACOPTS,
+    test_class = "org.tensorflow.EagerOperationBuilderTest",
+    deps = [
+        ":tensorflow",
+        ":testutil",
+        "@junit",
+    ],
+)
+
+tf_java_test(
+    name = "EagerOperationTest",
+    size = "small",
+    srcs = ["src/test/java/org/tensorflow/EagerOperationTest.java"],
+    javacopts = JAVACOPTS,
+    test_class = "org.tensorflow.EagerOperationTest",
+    deps = [
+        ":tensorflow",
+        ":testutil",
+        "@junit",
+    ],
+)
+
+tf_java_test(
     name = "GraphTest",
     size = "small",
     srcs = ["src/test/java/org/tensorflow/GraphTest.java"],
@@ -147,11 +187,11 @@ tf_java_test(
 )
 
 tf_java_test(
-    name = "OperationBuilderTest",
+    name = "GraphOperationBuilderTest",
     size = "small",
-    srcs = ["src/test/java/org/tensorflow/OperationBuilderTest.java"],
+    srcs = ["src/test/java/org/tensorflow/GraphOperationBuilderTest.java"],
     javacopts = JAVACOPTS,
-    test_class = "org.tensorflow.OperationBuilderTest",
+    test_class = "org.tensorflow.GraphOperationBuilderTest",
     deps = [
         ":tensorflow",
         ":testutil",
@@ -160,11 +200,11 @@ tf_java_test(
 )
 
 tf_java_test(
-    name = "OperationTest",
+    name = "GraphOperationTest",
     size = "small",
-    srcs = ["src/test/java/org/tensorflow/OperationTest.java"],
+    srcs = ["src/test/java/org/tensorflow/GraphOperationTest.java"],
     javacopts = JAVACOPTS,
-    test_class = "org.tensorflow.OperationTest",
+    test_class = "org.tensorflow.GraphOperationTest",
     deps = [
         ":tensorflow",
         ":testutil",
@@ -363,7 +403,7 @@ filegroup(
     name = "libtensorflow_jni",
     srcs = select({
         "//tensorflow:windows": [":tensorflow_jni.dll"],
-        "//tensorflow:darwin": [":libtensorflow_jni.dylib"],
+        "//tensorflow:macos": [":libtensorflow_jni.dylib"],
         "//conditions:default": [":libtensorflow_jni.so"],
     }),
     visibility = ["//visibility:public"],
@@ -380,7 +420,7 @@ tf_cc_binary(
     # considerably (~50% as of January 2017).
     linkopts = select({
         "//tensorflow:debug": [],  # Disable all custom linker options in debug mode
-        "//tensorflow:darwin": [
+        "//tensorflow:macos": [
             "-Wl,-exported_symbols_list,$(location {})".format(LINKER_EXPORTED_SYMBOLS),
         ],
         "//tensorflow:windows": [],

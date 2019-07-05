@@ -21,20 +21,24 @@ from __future__ import print_function
 import os
 
 from tensorflow.python import keras
-from tensorflow.python.client import session
+from tensorflow.python.client import session as session_lib
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import convert_to_constants
-from tensorflow.python.framework import importer
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
+from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
+from tensorflow.python.saved_model import simple_save
 from tensorflow.python.saved_model.load import load
 from tensorflow.python.saved_model.save import save
 from tensorflow.python.training.tracking import tracking
+from tensorflow.python.util import nest
 
 
+# TODO(nupurgarg): Simplify the test cases to use the ConcreteFunction.
 class VariablesToConstantsTest(test.TestCase):
 
   def _hasStatefulPartitionedCallOp(self, graph_def):
@@ -48,23 +52,25 @@ class VariablesToConstantsTest(test.TestCase):
     """Returns the number of ReadVariableOp in the graph."""
     return sum(node.op == "ReadVariableOp" for node in graph_def.node)
 
-  def _getTensors(self, sess, tensor_list):
-    """Returns a list of Tensor objects from the Session."""
-    return [
-        sess.graph.get_tensor_by_name(tensor.name) for tensor in tensor_list
-    ]
+  def _testConvertedFunction(self, obj, func, converted_concrete_func,
+                             input_data):
+    # Check that the converted ConcreteFunction produces the same result as the
+    # original Function.
+    expected_value = nest.flatten(func(input_data))
+    actual_value = nest.flatten(converted_concrete_func(input_data))
+    self.assertEqual(expected_value[0].numpy(), actual_value)
 
-  def _evaluateGraphDef(self, graph_def, func, input_data):
-    """Evaluates the GraphDef using Sessions."""
-    with ops.Graph().as_default() as graph:
-      importer.import_graph_def(graph_def, name="")
-      func.add_to_graph(graph)
-      sess = session.Session(graph=graph)
+    # Ensure the shape is retained.
+    self.assertEqual(converted_concrete_func.inputs[0].shape, input_data.shape)
 
-    input_tensors = self._getTensors(sess, func.inputs)
-    output_tensors = self._getTensors(sess, func.outputs)
-    return sess.run(
-        output_tensors, feed_dict=dict(zip(input_tensors, input_data)))
+    # Save the converted ConcreteFunction as a signature.
+    save_dir = os.path.join(self.get_temp_dir(), "frozen_saved_model")
+    save(obj, save_dir, {"mykey": converted_concrete_func})
+
+    # Load it back and make sure it works.
+    loaded_obj = load(save_dir)
+    actual_value = nest.flatten(loaded_obj.signatures["mykey"](input_data))
+    self.assertEqual(expected_value[0].numpy(), actual_value)
 
   @test_util.run_v2_only
   def testConstSavedModel(self):
@@ -77,22 +83,19 @@ class VariablesToConstantsTest(test.TestCase):
     save_dir = os.path.join(self.get_temp_dir(), "saved_model")
     save(root, save_dir, to_save)
     saved_model = load(save_dir)
-    concrete_func = saved_model.signatures["serving_default"]
+    input_func = saved_model.signatures["serving_default"]
 
-    variable_graph_def = concrete_func.graph.as_graph_def()
+    variable_graph_def = input_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(variable_graph_def))
     self.assertTrue(variable_graph_def.library.function)
 
-    constant_graph_def = convert_to_constants.convert_variables_to_constants_v2(
-        concrete_func)
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(constant_graph_def))
     self.assertFalse(constant_graph_def.library.function)
 
-    # Check value.
-    expected_value = root.f(input_data)
-    actual_value = self._evaluateGraphDef(constant_graph_def, concrete_func,
-                                          [input_data.numpy()])
-    self.assertEqual(expected_value.numpy(), actual_value)
+    self._testConvertedFunction(root, root.f, output_func, input_data)
 
   @test_util.run_v2_only
   def testVariableModel(self):
@@ -102,21 +105,39 @@ class VariablesToConstantsTest(test.TestCase):
     root.v1 = variables.Variable(3.)
     root.v2 = variables.Variable(2.)
     root.f = def_function.function(lambda x: root.v1 * root.v2 * x)
-    concrete_func = root.f.get_concrete_function(input_data)
+    input_func = root.f.get_concrete_function(input_data)
 
-    variable_graph_def = concrete_func.graph.as_graph_def()
+    variable_graph_def = input_func.graph.as_graph_def()
     self.assertEqual(2, self._getNumVariables(variable_graph_def))
 
-    constant_graph_def = convert_to_constants.convert_variables_to_constants_v2(
-        concrete_func)
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(constant_graph_def))
     self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
 
-    # Check value.
-    expected_value = root.f(input_data)
-    actual_value = self._evaluateGraphDef(constant_graph_def, concrete_func,
-                                          [input_data.numpy()])
-    self.assertEqual(expected_value.numpy(), actual_value)
+    self._testConvertedFunction(root, root.f, output_func, input_data)
+
+  @test_util.run_v2_only
+  def testScalarModel(self):
+    """Test a basic model with Variables."""
+    input_data = constant_op.constant(1., shape=[])
+    root = tracking.AutoTrackable()
+    root.v1 = variables.Variable(3.)
+    root.v2 = variables.Variable(2.)
+    root.f = def_function.function(lambda x: root.v1 * root.v2 * x)
+    input_func = root.f.get_concrete_function(input_data)
+
+    variable_graph_def = input_func.graph.as_graph_def()
+    self.assertEqual(2, self._getNumVariables(variable_graph_def))
+
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
+    self.assertEqual(0, self._getNumVariables(constant_graph_def))
+    self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
+
+    self._testConvertedFunction(root, root.f, output_func, input_data)
 
   @test_util.run_v2_only
   def testVariableSavedModel(self):
@@ -131,21 +152,18 @@ class VariablesToConstantsTest(test.TestCase):
     save_dir = os.path.join(self.get_temp_dir(), "saved_model")
     save(root, save_dir, to_save)
     saved_model = load(save_dir)
-    concrete_func = saved_model.signatures["serving_default"]
+    input_func = saved_model.signatures["serving_default"]
 
-    variable_graph_def = concrete_func.graph.as_graph_def()
+    variable_graph_def = input_func.graph.as_graph_def()
     self.assertTrue(self._hasStatefulPartitionedCallOp(variable_graph_def))
 
-    constant_graph_def = convert_to_constants.convert_variables_to_constants_v2(
-        concrete_func)
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(constant_graph_def))
     self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
 
-    # Check value.
-    expected_value = root.f(input_data)
-    actual_value = self._evaluateGraphDef(constant_graph_def, concrete_func,
-                                          [input_data.numpy()])
-    self.assertEqual(expected_value.numpy(), actual_value)
+    self._testConvertedFunction(root, root.f, output_func, input_data)
 
   @test_util.run_v2_only
   def testMultiFunctionModel(self):
@@ -171,21 +189,18 @@ class VariablesToConstantsTest(test.TestCase):
 
     input_data = constant_op.constant(1., shape=[1])
     root = BasicModel()
-    concrete_func = root.add.get_concrete_function(input_data)
+    input_func = root.add.get_concrete_function(input_data)
 
-    variable_graph_def = concrete_func.graph.as_graph_def()
+    variable_graph_def = input_func.graph.as_graph_def()
     self.assertEqual(1, self._getNumVariables(variable_graph_def))
 
-    constant_graph_def = convert_to_constants.convert_variables_to_constants_v2(
-        concrete_func)
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(constant_graph_def))
     self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
 
-    # Check value.
-    expected_value = root.add(input_data)
-    actual_value = self._evaluateGraphDef(constant_graph_def, concrete_func,
-                                          [input_data.numpy()])
-    self.assertEqual(expected_value.numpy(), actual_value)
+    self._testConvertedFunction(root, root.add, output_func, input_data)
 
   @test_util.run_v2_only
   def testKerasModel(self):
@@ -205,22 +220,60 @@ class VariablesToConstantsTest(test.TestCase):
     def to_save(x):
       return model(x)
 
-    concrete_func = to_save.get_concrete_function(input_data)
+    input_func = to_save.get_concrete_function(input_data)
 
-    variable_graph_def = concrete_func.graph.as_graph_def()
+    variable_graph_def = input_func.graph.as_graph_def()
     self.assertEqual(2, self._getNumVariables(variable_graph_def))
 
-    constant_graph_def = convert_to_constants.convert_variables_to_constants_v2(
-        concrete_func)
+    output_func = convert_to_constants.convert_variables_to_constants_v2(
+        input_func)
+    constant_graph_def = output_func.graph.as_graph_def()
     self.assertEqual(0, self._getNumVariables(constant_graph_def))
     self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
 
     # Check value.
     expected_value = to_save(input_data)
-    actual_value = self._evaluateGraphDef(constant_graph_def, concrete_func,
-                                          [input_data.numpy()])
+    actual_value = nest.flatten(output_func(input_data))
     self.assertEqual(expected_value.numpy(), actual_value)
 
+  def _v1_single_metagraph_saved_model(self):
+    export_graph = ops.Graph()
+    with export_graph.as_default():
+      start = array_ops.placeholder(
+          shape=[1, 1], dtype=dtypes.float32, name="start")
+      distractor = variables.RefVariable(-1., name="distractor")
+      v = variables.RefVariable(3., name="v")
+      local_variable = variables.VariableV1(
+          1.,
+          collections=[ops.GraphKeys.LOCAL_VARIABLES],
+          trainable=False,
+          use_resource=True)
+      output = array_ops.identity(start * v * local_variable, name="output")
+      with session_lib.Session() as session:
+        session.run([v.initializer, distractor.initializer,
+                     local_variable.initializer])
+        path = os.path.join(self.get_temp_dir(), "saved_model", str(ops.uid()))
+        simple_save.simple_save(
+            session,
+            path,
+            inputs={"start": start},
+            outputs={"output": output},
+            legacy_init_op=local_variable.initializer)
+    return path
+
+  @test_util.run_v2_only
+  def test_ref_variable_import(self):
+    saved = self._v1_single_metagraph_saved_model()
+    imported = load(saved)
+    fn = imported.signatures["serving_default"]
+    output_func = convert_to_constants.convert_variables_to_constants_v2(fn)
+    constant_graph_def = output_func.graph.as_graph_def()
+    self.assertEqual(0, self._getNumVariables(constant_graph_def))
+    self.assertFalse(self._hasStatefulPartitionedCallOp(constant_graph_def))
+
+    input_data = constant_op.constant(1., shape=[1, 1])
+    root = tracking.AutoTrackable()
+    self._testConvertedFunction(root, fn, output_func, input_data)
 
 if __name__ == "__main__":
   test.main()

@@ -25,6 +25,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "tensorflow/compiler/xla/client/client_library.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
+#include "tensorflow/compiler/xla/service/compiler.h"
 #include "tensorflow/compiler/xla/status_macros.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
@@ -39,6 +40,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/stream_executor_no_cuda.h"
+#include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/util/stream_executor_util.h"
 
 // OP_REQUIRES_OK_RETURN is the same as OP_REQUIRES_OK except that
@@ -60,8 +62,8 @@ XlaPlatformInfo PlatformInfoFromContext(OpKernelConstruction* ctx) {
   DeviceType device_type = ctx->device_type();
   se::Platform::Id platform_id = nullptr;
   const XlaDevice::Metadata* xla_device_metadata = nullptr;
-  std::unique_ptr<XlaAllocator> xla_allocator;
-  xla::DeviceMemoryAllocator* device_allocator = nullptr;
+  std::unique_ptr<se::TfAllocatorAdapter> xla_allocator;
+  se::DeviceMemoryAllocator* device_allocator = nullptr;
 
   if (ctx->device_type() == DeviceType(DEVICE_CPU)) {
     platform_id = se::host::kHostPlatformId;
@@ -92,7 +94,7 @@ XlaPlatformInfo PlatformInfoFromContext(OpKernelConstruction* ctx) {
         se::MultiPlatformManager::PlatformWithId(platform_id);
     OP_REQUIRES_OK_RETURN(ctx, XlaPlatformInfo(), maybe_platform.status());
 
-    xla_allocator = absl::make_unique<XlaAllocator>(
+    xla_allocator = absl::make_unique<se::TfAllocatorAdapter>(
         maybe_platform.ValueOrDie(), ctx->device()->GetAllocator({}));
   }
 
@@ -209,6 +211,28 @@ static Status BuildCompilationCache(OpKernelContext* ctx,
   if (!platform.ok()) {
     return platform.status();
   }
+
+  xla::StatusOr<xla::Compiler*> compiler_for_platform =
+      xla::Compiler::GetForPlatform(platform.ValueOrDie());
+  if (!compiler_for_platform.ok()) {
+    // In some rare cases (usually in unit tests with very small clusters) we
+    // may end up transforming an XLA cluster with at least one GPU operation
+    // (which would normally force the cluster to be compiled using XLA:GPU)
+    // into an XLA cluster with no GPU operations (i.e. containing only CPU
+    // operations).  Such a cluster can fail compilation (in way that
+    // MarkForCompilation could not have detected) if the CPU JIT is not linked
+    // in.
+    //
+    // So bail out of _XlaCompile in this case, and let the executor handle the
+    // situation for us.
+    const Status& status = compiler_for_platform.status();
+    if (status.code() == error::NOT_FOUND) {
+      return errors::Unimplemented("Could not find compiler for platform ",
+                                   platform.ValueOrDie()->Name(), ": ",
+                                   status.ToString());
+    }
+  }
+
   xla::LocalClientOptions client_options;
   client_options.set_platform(platform.ValueOrDie());
   client_options.set_intra_op_parallelism_threads(
@@ -502,9 +526,19 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   // We're missing the must-be-constant inputs, tell `PopulateInputs`
   // about this.  We don't actually need these inputs because they've
   // already been baked into the compiled kernel.
-  launch_context.PopulateInputs(
-      ctx, closure.compilation_result(), closure.resource_var_snapshots(),
-      /*missing_ctx_input_prefix=*/closure.num_constant_args());
+  {
+    tensorflow::profiler::TraceMe hlo_module_activity(
+        [&] {
+          return absl::StrCat(
+              "Populate Inputs (",
+              closure.compilation_result()->xla_input_shapes.size(), ")");
+        },
+        tensorflow::profiler::TraceMeLevel::kInfo);
+
+    launch_context.PopulateInputs(
+        ctx, closure.compilation_result(), closure.resource_var_snapshots(),
+        /*missing_ctx_input_prefix=*/closure.num_constant_args());
+  }
 
   se::Stream* stream =
       ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
@@ -522,6 +556,12 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
 
   auto elapsed = env->NowMicros() - start_time;
   VLOG(2) << "Elapsed time in computation: " << elapsed << "us";
+
+  tensorflow::profiler::TraceMe hlo_module_activity(
+      [&] {
+        return absl::StrCat("Populate Outputs (", ctx->num_outputs(), ")");
+      },
+      tensorflow::profiler::TraceMeLevel::kInfo);
 
   OP_REQUIRES_OK(
       ctx,
