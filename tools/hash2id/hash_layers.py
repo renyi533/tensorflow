@@ -31,14 +31,18 @@ class HashSparseEmbedding(SparseEmbedding):
       dim,
       initializer=lambda: tf.truncated_normal_initializer(stddev=0.04),
       combiner='sum',
-      partition=13,
+      partition=8,
+      use_locking=False,
       **kwargs):
     super(HashSparseEmbedding, self).__init__(
         max_id=max_id, dim=dim, initializer=initializer, combiner=combiner)
     self.partition = partition
+    self.use_locking = use_locking
   
   def call(self, inputs):
-    n_fids = hash_fid(inputs.values, self.max_id+1, partition=self.partition)
+    n_fids = hash_fid(inputs.values, self.max_id+1, 
+            partition=self.partition, use_locking=self.use_locking)
+
     new_inputs = tf.SparseTensor(
         indices=inputs.indices,
         values=n_fids, dense_shape=inputs.dense_shape)
@@ -53,16 +57,20 @@ class HashEmbedding(Embedding):
       max_id,
       dim,
       initializer=lambda: tf.truncated_normal_initializer(stddev=0.1),
-      partition=13,
+      partition=8,
+      use_locking=False,
       **kwargs):
     super(HashEmbedding, self).__init__(
         max_id=max_id, dim=dim, initializer=initializer)
     self.partition = partition
+    self.use_locking = use_locking
   
   def call(self, inputs):
     in_shape = inputs.shape
     inputs = tf.reshape(inputs,[-1])
-    out = hash_fid(inputs, self.max_id+1, partition=self.partition)
+    out = hash_fid(inputs, self.max_id+1, 
+            partition=self.partition, use_locking=self.use_locking)
+
     out_shape = [d if d is not None else -1 for d in in_shape.as_list()]
     new_inputs = tf.reshape(out, out_shape)
     return super(HashEmbedding, self).call(new_inputs)
