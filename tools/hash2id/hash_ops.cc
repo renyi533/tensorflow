@@ -11,7 +11,7 @@ REGISTER_OP("EulerHashFid")
     .Input("end: int64")
     .Output("output_fids: int64");
 
-REGISTER_OP("LagrangeHashTableCreate")
+REGISTER_OP("HashTableCreate")
     .SetIsStateful()
     .Output("handle: resource")
     .Attr("rehash: bool")
@@ -21,7 +21,7 @@ REGISTER_OP("LagrangeHashTableCreate")
     .Attr("shared_name: string = ''")
     .SetShapeFn(shape_inference::ScalarShape);
 
-REGISTER_OP("LagrangeHashTableHashFid")
+REGISTER_OP("HashTableHashFid")
     .Attr("Tidx: {int64}")
     .Input("handle: resource")
     .Input("instance_ids: Tidx")
@@ -29,11 +29,11 @@ REGISTER_OP("LagrangeHashTableHashFid")
     .Output("output_instance_ids: Tidx")
     .Output("output_fids: Tidx");
 
-REGISTER_OP("LagrangeHashTableExport")
+REGISTER_OP("HashTableExport")
     .Input("handle: resource")
     .Output("buff: uint64");
 
-REGISTER_OP("LagrangeHashTableRestore")
+REGISTER_OP("HashTableRestore")
     .Input("handle: resource")
     .Input("buff: uint64");
 

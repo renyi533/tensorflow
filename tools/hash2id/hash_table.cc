@@ -9,9 +9,9 @@
 
 namespace tensorflow
 {
-class LagrangeHashTable : public ResourceBase {
+class HashTable : public ResourceBase {
 public:
-    LagrangeHashTable(
+    HashTable(
             bool rehash,
             const std::vector<int64>& slot_hash_sizes,
             const std::vector<int>& occurrence_threshold) {
@@ -145,27 +145,27 @@ private:
     std::unordered_map<uint64_t, uint64_t> hash_map;
     std::vector<uint64_t> hash_count;
 
-    TF_DISALLOW_COPY_AND_ASSIGN(LagrangeHashTable);
+    TF_DISALLOW_COPY_AND_ASSIGN(HashTable);
 };
 
-class LagrangeHashTableCreateOp : public ResourceOpKernel<LagrangeHashTable> {
+class HashTableCreateOp : public ResourceOpKernel<HashTable> {
 public:
-    explicit LagrangeHashTableCreateOp(OpKernelConstruction *context) : ResourceOpKernel(context) {
+    explicit HashTableCreateOp(OpKernelConstruction *context) : ResourceOpKernel(context) {
         OP_REQUIRES_OK(context, context->GetAttr("rehash", &rehash_));
         OP_REQUIRES_OK(context, context->GetAttr("slot_hash_sizes", &slot_hash_sizes_));
         OP_REQUIRES_OK(context, context->GetAttr("occurrence_threshold", &occurrence_threshold_));
     }
 
 private:
-    Status CreateResource(LagrangeHashTable** map) override EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-        *map = new LagrangeHashTable(rehash_, slot_hash_sizes_, occurrence_threshold_);
+    Status CreateResource(HashTable** map) override EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+        *map = new HashTable(rehash_, slot_hash_sizes_, occurrence_threshold_);
         if (*map == nullptr) {
             return errors::ResourceExhausted("Failed to allocate evaluator");
         }
         return Status::OK();
     }
 
-    Status VerifyResource(LagrangeHashTable* map) override EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    Status VerifyResource(HashTable* map) override EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         return Status::OK();
     }
 
@@ -174,16 +174,16 @@ private:
     std::vector<int64> slot_hash_sizes_;
     std::vector<int> occurrence_threshold_;
 
-    TF_DISALLOW_COPY_AND_ASSIGN(LagrangeHashTableCreateOp);
+    TF_DISALLOW_COPY_AND_ASSIGN(HashTableCreateOp);
 };
 
 
-class LagrangeHashTableHashFidOp : public OpKernel {
+class HashTableHashFidOp : public OpKernel {
 public:
-    explicit LagrangeHashTableHashFidOp(OpKernelConstruction *context) : OpKernel(context) {}
+    explicit HashTableHashFidOp(OpKernelConstruction *context) : OpKernel(context) {}
 
     void Compute(OpKernelContext *context) override {
-        LagrangeHashTable* map;
+        HashTable* map;
         OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0), &map));
         core::ScopedUnref unref_eval(map);
         map->Hash(context);
@@ -191,13 +191,13 @@ public:
 };
 
 
-class LagrangeHashTableExportOp : public OpKernel {
+class HashTableExportOp : public OpKernel {
 public:
-    explicit LagrangeHashTableExportOp(OpKernelConstruction *context) : OpKernel(context) {
+    explicit HashTableExportOp(OpKernelConstruction *context) : OpKernel(context) {
     }
 
     void Compute(OpKernelContext *context) override {
-        LagrangeHashTable* map;
+        HashTable* map;
         OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0), &map));
         core::ScopedUnref unref_eval(map);
         map->Export(context);
@@ -205,13 +205,13 @@ public:
 };
 
 
-class LagrangeHashTableRestoreOp : public OpKernel {
+class HashTableRestoreOp : public OpKernel {
 public:
-    explicit LagrangeHashTableRestoreOp(OpKernelConstruction *context) : OpKernel(context) {
+    explicit HashTableRestoreOp(OpKernelConstruction *context) : OpKernel(context) {
     }
 
     void Compute(OpKernelContext *context) override {
-        LagrangeHashTable* map;
+        HashTable* map;
         OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0), &map));
         core::ScopedUnref unref_eval(map);
         map->Restore(context);
@@ -219,17 +219,17 @@ public:
 };
 
 
-REGISTER_KERNEL_BUILDER(Name("LagrangeHashTableCreate").Device(DEVICE_CPU),
-                        LagrangeHashTableCreateOp);
+REGISTER_KERNEL_BUILDER(Name("HashTableCreate").Device(DEVICE_CPU),
+                        HashTableCreateOp);
 
-REGISTER_KERNEL_BUILDER(Name("LagrangeHashTableHashFid").Device(DEVICE_CPU),
-                        LagrangeHashTableHashFidOp);
+REGISTER_KERNEL_BUILDER(Name("HashTableHashFid").Device(DEVICE_CPU),
+                        HashTableHashFidOp);
 
-REGISTER_KERNEL_BUILDER(Name("LagrangeHashTableExport").Device(DEVICE_CPU),
-                        LagrangeHashTableExportOp);
+REGISTER_KERNEL_BUILDER(Name("HashTableExport").Device(DEVICE_CPU),
+                        HashTableExportOp);
 
-REGISTER_KERNEL_BUILDER(Name("LagrangeHashTableRestore").Device(DEVICE_CPU),
-                        LagrangeHashTableRestoreOp);
+REGISTER_KERNEL_BUILDER(Name("HashTableRestore").Device(DEVICE_CPU),
+                        HashTableRestoreOp);
 
 } // namespace tensorflow
 
