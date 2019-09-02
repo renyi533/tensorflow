@@ -16,7 +16,7 @@ inflate_idx = base._LIB_OP.inflate_idx
 sparse_gather = base._LIB_OP.sparse_gather
 euler_hash_fid = base._LIB_OP.euler_hash_fid
 
-def hash_fid(fids, hash_space, multiplier=7, partition=None, use_locking=True):
+def hash_fid(fids, hash_space, multiplier=5, partition=None, use_locking=True):
   with tf.variable_scope('hash_fids', reuse=tf.AUTO_REUSE):
     var_dim = hash_space*multiplier
     if partition is None:
@@ -30,6 +30,8 @@ def hash_fid(fids, hash_space, multiplier=7, partition=None, use_locking=True):
                           dtype=tf.int64,
                           initializer=tf.constant_initializer([0]),
                           partitioner=tf.fixed_size_partitioner(partition))
+  orig_fids = fids
+  fids, idx = tf.unique(fids, out_idx=tf.dtypes.int32)
 
   params = v
   if isinstance(params, variables.PartitionedVariable):
@@ -37,10 +39,11 @@ def hash_fid(fids, hash_space, multiplier=7, partition=None, use_locking=True):
   elif not isinstance(params, list):
     params = [params]
 
+  ret = None
   np = len(params)
   if np == 1:
     with tf.colocate_with(params[0]):
-      return euler_hash_fid(params[0], fids, 0, hash_space-1, 
+      ret = euler_hash_fid(params[0], fids, 0, hash_space-1, 
                   use_locking=use_locking)
   else:
     flat_ids = tf.reshape(fids, [-1])
@@ -68,4 +71,5 @@ def hash_fid(fids, hash_space, multiplier=7, partition=None, use_locking=True):
       partitioned_result.append(result)
     ret = tf.dynamic_stitch(pindices, 
                             partitioned_result)
-    return tf.reshape(ret, [-1])
+  ret = tf.reshape(ret, [-1])
+  return tf.gather(ret, idx, axis=0)
