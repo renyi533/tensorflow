@@ -16,18 +16,20 @@ inflate_idx = base._LIB_OP.inflate_idx
 sparse_gather = base._LIB_OP.sparse_gather
 euler_hash_fid = base._LIB_OP.euler_hash_fid
 
-def hash_fid(fids, hash_space, multiplier=5, partition=None, use_locking=True):
+def hash_fid(fids, hash_space, multiplier=3, partition=None, use_locking=True):
   with tf.variable_scope('hash_fids', reuse=tf.AUTO_REUSE):
     var_dim = hash_space*multiplier
     if partition is None:
       v = tf.get_variable("hash_param", 
                           [var_dim, 2],
                           dtype=tf.int64,
+                          trainable=False,
                           initializer=tf.constant_initializer([0]))
     else:
       v = tf.get_variable("hash_param", 
                           [var_dim, 2],
                           dtype=tf.int64,
+                          trainable=False,
                           initializer=tf.constant_initializer([0]),
                           partitioner=tf.fixed_size_partitioner(partition))
   orig_fids = fids
@@ -48,7 +50,7 @@ def hash_fid(fids, hash_space, multiplier=5, partition=None, use_locking=True):
   else:
     flat_ids = tf.reshape(fids, [-1])
     original_indices = tf.range(tf.size(flat_ids))
-    p_assignments = flat_ids % np
+    p_assignments = tf.abs(flat_ids) % np
     new_ids = flat_ids // np
     sub_space = hash_space // np
 
