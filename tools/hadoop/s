@@ -1,0 +1,91 @@
+On branch master
+Your branch is up-to-date with 'origin/master'.
+Changes to be committed:
+  (use "git reset HEAD <file>..." to unstage)
+
+	new file:   jar/BinaryDataGen.jar
+	new file:   jar/fastjson-1.2.59.jar
+	new file:   jar/graph_data_parser.jar
+	new file:   readme.txt
+	new file:   src/graph_data_parser/Block.java
+	new file:   src/graph_data_parser/BlockParser.java
+	new file:   src/graph_data_parser/Bytes.java
+	new file:   src/graph_data_parser/DataWriter.java
+	new file:   src/graph_data_parser/Meta.java
+	new file:   src/main/BinaryDataGen.java
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+
+	../../activate/
+	../../build/
+	../../ckpt/
+	../../deactivate/
+	../../dist/
+	../../euler/__init__.pyc
+	../../euler/python/__init__.pyc
+	../../euler/python/libeuler_service.so
+	../../euler/python/service.pyc
+	../../euler_gl.egg-info/
+	../../examples/ppi.zip
+	../../examples/ppi/
+	../../hadoop-2.9.2.tar.gz
+	../../s
+	../../tf_euler/__init__.pyc
+	../../tf_euler/python/__init__.pyc
+	../../tf_euler/python/aggregators.pyc
+	../../tf_euler/python/base_layers.pyc
+	../../tf_euler/python/encoders.pyc
+	../../tf_euler/python/euler_ops/__init__.pyc
+	../../tf_euler/python/euler_ops/base.pyc
+	../../tf_euler/python/euler_ops/feature_ops.pyc
+	../../tf_euler/python/euler_ops/libclient.so
+	../../tf_euler/python/euler_ops/libtf_euler.so
+	../../tf_euler/python/euler_ops/neighbor_ops.pyc
+	../../tf_euler/python/euler_ops/sample_ops.pyc
+	../../tf_euler/python/euler_ops/type_ops.pyc
+	../../tf_euler/python/euler_ops/util_ops.pyc
+	../../tf_euler/python/euler_ops/walk_ops.pyc
+	../../tf_euler/python/layers.pyc
+	../../tf_euler/python/metrics.pyc
+	../../tf_euler/python/models/__init__.pyc
+	../../tf_euler/python/models/base.pyc
+	../../tf_euler/python/models/gat.pyc
+	../../tf_euler/python/models/gcn.pyc
+	../../tf_euler/python/models/graphsage.pyc
+	../../tf_euler/python/models/lasgnn.pyc
+	../../tf_euler/python/models/line.pyc
+	../../tf_euler/python/models/lshne.pyc
+	../../tf_euler/python/models/node2vec.pyc
+	../../tf_euler/python/optimizers.pyc
+	../../tf_euler/python/run_loop.pyc
+	../../tf_euler/python/sparse_aggregators.pyc
+	../../tf_euler/python/utils/__init__.pyc
+	../../tf_euler/python/utils/context.pyc
+	../../tf_euler/python/utils/embedding.pyc
+	../../tf_euler/python/utils/flags.pyc
+	../../tf_euler/python/utils/hooks.pyc
+	../../third_party/change
+	../../third_party/zookeeper/s
+	../../third_party/zookeeper/zoo.cfg
+	../graph_data_parser/resources/0.dat
+	../graph_data_parser/resources/1.dat
+	../graph_data_parser/resources/ppidata/
+	../graph_data_parser/resources0.dat
+	../graph_data_parser/resources1.dat
+	../graph_data_parser/src/main/java/graph_data_parser/Block.class
+	../graph_data_parser/src/main/java/graph_data_parser/BlockParser.class
+	../graph_data_parser/src/main/java/graph_data_parser/Bytes.class
+	../graph_data_parser/src/main/java/graph_data_parser/DataWriter.class
+	../graph_data_parser/src/main/java/graph_data_parser/Edge.class
+	../graph_data_parser/src/main/java/graph_data_parser/GraphDataParser.class
+	../graph_data_parser/src/main/java/graph_data_parser/HDFSWriter.class
+	../graph_data_parser/src/main/java/graph_data_parser/LineBuffer.class
+	../graph_data_parser/src/main/java/graph_data_parser/LocalWriter.class
+	../graph_data_parser/src/main/java/graph_data_parser/Meta.class
+	s
+
+
+It took 3.19 seconds to enumerate untracked files. 'status -uno'
+may speed it up, but you have to be careful not to forget to add
+new files yourself (see 'git help status').
