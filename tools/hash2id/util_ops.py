@@ -16,9 +16,9 @@ inflate_idx = base._LIB_OP.inflate_idx
 sparse_gather = base._LIB_OP.sparse_gather
 euler_hash_fid = base._LIB_OP.euler_hash_fid
 
-def hash_fid(fids, hash_space, multiplier=3, partition=None, use_locking=True):
+def hash_fid(fids, hash_space, multiplier=1.6, partition=None, use_locking=True):
   with tf.variable_scope('hash_fids', reuse=tf.AUTO_REUSE):
-    var_dim = hash_space*multiplier
+    var_dim = int(hash_space*multiplier)
     if partition is None:
       v = tf.get_variable("hash_param", 
                           [var_dim, 2],

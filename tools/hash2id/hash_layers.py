@@ -31,7 +31,7 @@ class HashSparseEmbedding(SparseEmbedding):
       dim,
       initializer=lambda: tf.truncated_normal_initializer(stddev=0.04),
       combiner='sum',
-      partition=8,
+      partition=11,
       use_locking=False,
       **kwargs):
     super(HashSparseEmbedding, self).__init__(
@@ -57,7 +57,7 @@ class HashEmbedding(Embedding):
       max_id,
       dim,
       initializer=lambda: tf.truncated_normal_initializer(stddev=0.1),
-      partition=8,
+      partition=11,
       use_locking=False,
       **kwargs):
     super(HashEmbedding, self).__init__(

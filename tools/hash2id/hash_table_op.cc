@@ -49,7 +49,8 @@ class EulerHashFidOp : public OpKernel {
               errors::InvalidArgument("params must be 2-D with 2 columns"));
 
     OP_REQUIRES(c, start_ <= end_, errors::InvalidArgument("start > end"));
-    OP_REQUIRES(c, param_size >= 2 * (end_ - start_ + 1),
+    double ratio = 1.15;
+    OP_REQUIRES(c, param_size >= ratio * (end_ - start_ + 1),
                 errors::FailedPrecondition("hash space too low"));
     
     Tensor *out_fids_tensor = nullptr;
