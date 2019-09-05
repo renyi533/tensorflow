@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cstdlib>
 
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -61,7 +62,7 @@ class EulerHashFidOp : public OpKernel {
       auto params_flat = params.flat<int64>();
       for (int64 i = 0; i < fids.dimension(0); ++i) {
         auto fid = fids(i);
-        int64 s_idx = fid % param_size;
+        int64 s_idx = llabs(fid) % param_size;
         while (params_flat(s_idx * 2) != 0 && 
           params_flat(s_idx * 2) != fid) {
           s_idx += 1;
@@ -86,7 +87,7 @@ class EulerHashFidOp : public OpKernel {
             
       for (int64 i = 0; i < fids.dimension(0); ++i) {
         int64_t fid = fids(i);
-        int64 s_idx = fid % param_size;
+        int64 s_idx = llabs(fid) % param_size;
         int64_t expected = 0;
         while (!atomic_compare_exchange_strong_explicit(
                                           buckets + s_idx * 2, 
