@@ -4,7 +4,7 @@ import numpy as np
 import math
 import pickle
 import time
-
+  
 from haha_lite.tensorflow import env
 tf_conf = env.parse_tf_config()
 from haha_lite.tensorflow import aop
