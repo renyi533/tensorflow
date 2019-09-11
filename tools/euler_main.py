@@ -219,6 +219,10 @@ def run_train(model, flags_obj, master, is_chief):
 
   restore_path = None if len(flags_obj.last_model_path)==0 else flags_obj.last_model_path
 
+  if tf.gfile.Exists(flags_obj.model_path + '/checkpoint'):
+    restore_path = flags_obj.model_path
+
+  print('restore path: {}'.format(restore_path))
   print("global variables:")
   for t_var in tf.global_variables():
     print(t_var, t_var.device)
