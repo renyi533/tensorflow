@@ -80,7 +80,7 @@ struct LaunchDepthwiseConvBackpropFilterOp {
                   TensorFormat data_format);
 };
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 template <typename T>
 struct LaunchDepthwiseConvOp<Eigen::GpuDevice, T> {
   void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
@@ -167,7 +167,7 @@ struct DepthwiseFilterPadOp {
 
 // Copies data from local region in 'input' specified by 'out_r' and 'out_'c'
 // to 'input_buffer'. The copied data is replicated by factor
-// 'args.depth_mulitplier', and padded to vector register-width boundaries so
+// 'args.depth_multiplier', and padded to vector register-width boundaries so
 // that it is aligned for efficient traversal and vector multiply-add by the
 // depthwise kernel.
 //

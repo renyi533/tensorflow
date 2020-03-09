@@ -85,8 +85,9 @@ supported starting from which version. The result is seen below:
 
 ```
 typedef struct {
-  // Parameters supported by version 1: TfLitePadding padding; int
-  stride_width;
+  // Parameters supported by version 1:
+  TfLitePadding padding;
+  int stride_width;
   int stride_height;
   TfLiteFusedActivation activation;
 
@@ -155,7 +156,7 @@ AddBuiltin(BuiltinOperator_CONV_2D, Register_CONV_2D(), 1, 2);
 
 ### Change TOCO TFLite exporter
 
-The last step is to make TOCO populate the minimum version that's required to
+The next step is to make TOCO populate the minimum version that's required to
 execute the op. In this example, it means:
 
 *   Populate version=1 when dilation factors are all 1.
@@ -184,6 +185,21 @@ int GetVersion(const Operator& op) const override {
 }
 ```
 
+### Update the operator version map
+
+The last step is to add the new version info into the operator version map. This
+step is required because we need generate the model's minimum required runtime
+version based on this version map.
+
+To do this, you need to add a new map entry in `lite/toco/tflite/op_version.cc`.
+
+In this example, it means you need to add the following into `op_version_map`:
+```
+{{OperatorType::kConv, 3}, "kPendingReleaseOpVersion"}
+```
+(`kPendingReleaseOpVersion` will be replaced with the appropriate release
+version in the next stable release.)
+
 ### Delegation Implementation
 
 TensorFlow Lite provides a delegation API which enables delegating ops to
@@ -193,8 +209,8 @@ is supported for every node in Delegation code.
 ```
 const int kMinVersion = 1;
 TfLiteNode* node;
-TfLiteRegistration;
-context->GetNodeAndRegistration(context, node_index, &node, &registration);
+TfLiteRegistration* registration = nullptr;
+TF_LITE_ENSURE_STATUS(context->GetNodeAndRegistration(context, node_index, &node, &registration));
 
 if (registration->version > kMinVersion) {
   // Reject the node if the version isn't supported.

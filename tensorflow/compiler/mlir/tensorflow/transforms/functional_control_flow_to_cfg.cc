@@ -16,13 +16,16 @@ limitations under the License.
 // This transformation pass transforms functional control flow operations in the
 // standard TensorFlow dialect to MLIR Control Flow Graph (CFG) form.
 
-#include "mlir/IR/Builders.h"  // TF:local_config_mlir
-#include "mlir/IR/Operation.h"  // TF:local_config_mlir
-#include "mlir/IR/Value.h"  // TF:local_config_mlir
-#include "mlir/Pass/Pass.h"  // TF:local_config_mlir
-#include "mlir/Pass/PassRegistry.h"  // TF:local_config_mlir
-#include "mlir/StandardOps/Ops.h"  // TF:local_config_mlir
+#include "mlir/Dialect/StandardOps/IR/Ops.h"  // TF:llvm-project
+#include "mlir/IR/Attributes.h"  // TF:llvm-project
+#include "mlir/IR/Builders.h"  // TF:llvm-project
+#include "mlir/IR/Operation.h"  // TF:llvm-project
+#include "mlir/IR/TypeUtilities.h"  // TF:llvm-project
+#include "mlir/IR/Value.h"  // TF:llvm-project
+#include "mlir/Pass/Pass.h"  // TF:llvm-project
+#include "mlir/Pass/PassRegistry.h"  // TF:llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
 
 namespace mlir {
@@ -36,27 +39,10 @@ struct FunctionalControlFlowToCFG
 };
 
 // Lowers a general tensor argument that is used as a condition to a functional
-// control flow op into an i1 value.  This needs to implement the general
-// TensorFlow semantics, which are:
-//
-//   If the tensor is a scalar of non-boolean type, the scalar is converted to a
-//   boolean according to the following rule: if the scalar is a numerical
-//   value, non-zero means True and zero means False; if the scalar is a string,
-//   non-empty means True and empty means False. If the tensor is not a scalar,
-//   being empty means False and being non-empty means True.
-//
-static Value* LowerCondition(Location loc, Value* value, OpBuilder* builder) {
-  // TODO: Right now we just handle zero-D tensors of boolean values.
-  // FIXME: This is almost all wrong, but is a placeholder to unblock the one
-  // testcases, later patches will build on this once I build the right infra to
-  // support it.
-  TensorType type = value->getType().cast<TensorType>();
-  if (!type.hasRank() || type.getRank() != 0 ||
-      !type.getElementType().isInteger(1)) {
-    return emitError(loc, "only supports zero-D bool tensors now"), nullptr;
-  }
-
-  auto scalar = builder->create<ExtractElementOp>(loc, value);
+// control flow op into an i1 value.
+static Value LowerCondition(Location loc, Value value, OpBuilder* builder) {
+  auto zero_d = builder->create<ToBoolOp>(loc, value);
+  auto scalar = builder->create<ExtractElementOp>(loc, zero_d);
   return scalar.getResult();
 }
 
@@ -67,18 +53,20 @@ static Value* LowerCondition(Location loc, Value* value, OpBuilder* builder) {
 // Requires the function to provide arguments for each of the `fn` operands
 // that is compatible for tensor cast.
 //
-static Operation* CallFn(Location loc,
-                         const std::function<Value*(int)>& get_arg, Function fn,
-                         OpBuilder* builder) {
+static Operation* CallFn(Location loc, const std::function<Value(int)>& get_arg,
+                         FuncOp fn, OpBuilder* builder) {
   FunctionType fn_type = fn.getType();
-  llvm::SmallVector<Value*, 4> operands;
+  llvm::SmallVector<Value, 4> operands;
   int num_operands = fn_type.getNumInputs();
   operands.reserve(num_operands);
   for (int i = 0; i < num_operands; ++i) {
-    Value* val = get_arg(i);
+    Value val = get_arg(i);
     Type expected = fn_type.getInput(i);
-    if (val->getType() != expected)
-      val = builder->create<TensorCastOp>(loc, val, expected);
+    if (val.getType() != expected) {
+      val =
+          builder->create<TF::CastOp>(loc, expected, val,
+                                      /*Truncate=*/builder->getBoolAttr(false));
+    }
     operands.push_back(val);
   }
   return builder->create<CallOp>(loc, fn, operands).getOperation();
@@ -89,17 +77,20 @@ static Operation* CallFn(Location loc,
 //
 // Requires the function to provide values for each of the block arguments and
 // they should be pair-wise compatible for tensor cast.
-static llvm::SmallVector<Value*, 4> PrepareValsForJump(
-    Location loc, const std::function<Value*(int)>& get_val, Block* block,
+static llvm::SmallVector<Value, 4> PrepareValsForJump(
+    Location loc, const std::function<Value(int)>& get_val, Block* block,
     OpBuilder* builder) {
-  llvm::SmallVector<Value*, 4> result;
+  llvm::SmallVector<Value, 4> result;
   int num_vals = block->getNumArguments();
   result.reserve(num_vals);
   for (int i = 0; i < num_vals; ++i) {
-    Value* val = get_val(i);
-    Type expected = block->getArgument(i)->getType();
-    if (val->getType() != expected)
-      val = builder->create<TensorCastOp>(loc, val, expected);
+    Value val = get_val(i);
+    Type expected = block->getArgument(i).getType();
+    if (val.getType() != expected) {
+      val =
+          builder->create<TF::CastOp>(loc, expected, val,
+                                      /*Truncate=*/builder->getBoolAttr(false));
+    }
     result.push_back(val);
   }
   return result;
@@ -110,7 +101,7 @@ static llvm::SmallVector<Value*, 4> PrepareValsForJump(
 //
 // Requires the function to provide values for each of the block arguments and
 // they should be pair-wise compatible for tensor cast.
-static void JumpToBlock(Location loc, const std::function<Value*(int)>& get_arg,
+static void JumpToBlock(Location loc, const std::function<Value(int)>& get_arg,
                         Block* block, OpBuilder* builder) {
   auto operands = PrepareValsForJump(loc, get_arg, block, builder);
   builder->create<BranchOp>(loc, block, operands);
@@ -127,11 +118,14 @@ static void ReplaceOpResultWithBlockArgs(Location loc, Operation* op,
                                          Block* block, OpBuilder* builder) {
   assert(op->getNumResults() == block->getNumArguments());
   for (unsigned i = 0, e = op->getNumResults(); i != e; ++i) {
-    Value* arg = block->getArgument(i);
-    Value* result = op->getResult(i);
-    if (arg->getType() != result->getType())
-      arg = builder->create<TensorCastOp>(loc, arg, result->getType());
-    result->replaceAllUsesWith(arg);
+    Value arg = block->getArgument(i);
+    Value result = op->getResult(i);
+    if (arg.getType() != result.getType()) {
+      arg =
+          builder->create<TF::CastOp>(loc, result.getType(), arg,
+                                      /*Truncate=*/builder->getBoolAttr(false));
+    }
+    result.replaceAllUsesWith(arg);
   }
 }
 
@@ -141,19 +135,19 @@ static void ReplaceOpResultWithBlockArgs(Location loc, Operation* op,
 //
 // This returns true on failure.
 //
-static bool LowerIfOp(IfOp op) {
+static LogicalResult LowerIfOp(IfOp op) {
   Operation* op_inst = op.getOperation();
   Location loc = op_inst->getLoc();
 
   OpBuilder builder(op_inst);
 
   // Lower the condition to a boolean value (i1).
-  Value* cond_i1 = LowerCondition(loc, op.getCondition(), &builder);
-  if (!cond_i1) return true;
+  Value cond_i1 = LowerCondition(loc, op.cond(), &builder);
+  if (!cond_i1) return failure();
 
-  auto module = op_inst->getFunction().getModule();
-  auto then_fn = module.getNamedFunction(op.getThen());
-  auto else_fn = module.getNamedFunction(op.getElse());
+  auto module = op_inst->getParentOfType<ModuleOp>();
+  auto then_fn = module.lookupSymbol<FuncOp>(op.then_branch());
+  auto else_fn = module.lookupSymbol<FuncOp>(op.else_branch());
 
   // Split the basic block before the 'if'.  The new dest will be our merge
   // point.
@@ -162,8 +156,8 @@ static bool LowerIfOp(IfOp op) {
 
   // Add the block arguments to the merge point, and replace all uses of the
   // original operation results with them.
-  for (Value* value : op_inst->getResults())
-    merge_block->addArgument(value->getType());
+  for (Value value : op_inst->getResults())
+    merge_block->addArgument(value.getType());
   ReplaceOpResultWithBlockArgs(loc, op_inst, merge_block, &builder);
 
   // Get arguments to the branches after dropping the condition which is the
@@ -188,12 +182,12 @@ static bool LowerIfOp(IfOp op) {
   // orig_block with a conditional branch.
   builder.setInsertionPointToEnd(orig_block);
   builder.create<CondBranchOp>(loc, cond_i1, then_block,
-                               llvm::ArrayRef<Value*>(), else_block,
-                               llvm::ArrayRef<Value*>());
+                               llvm::ArrayRef<Value>(), else_block,
+                               llvm::ArrayRef<Value>());
 
   // Finally, delete the op in question.
   op_inst->erase();
-  return false;
+  return success();
 }
 
 // Given a functional WhileOp, transforms the enclosing code to eliminate it
@@ -202,15 +196,15 @@ static bool LowerIfOp(IfOp op) {
 //
 // This returns true on failure.
 //
-static bool LowerWhileOp(WhileOp op) {
+static LogicalResult LowerWhileOp(WhileOp op) {
   Operation* op_inst = op.getOperation();
   Location loc = op_inst->getLoc();
 
   OpBuilder builder(op_inst);
 
-  auto module = op_inst->getFunction().getModule();
-  auto cond_fn = module.getNamedFunction(op.getCond());
-  auto body_fn = module.getNamedFunction(op.getBody());
+  auto module = op_inst->getParentOfType<ModuleOp>();
+  auto cond_fn = module.lookupSymbol<FuncOp>(op.cond());
+  auto body_fn = module.lookupSymbol<FuncOp>(op.body());
 
   // Split the block containing the While op into two blocks.  One containing
   // operations before the While op and other containing the rest.  Create two
@@ -265,7 +259,7 @@ static bool LowerWhileOp(WhileOp op) {
   Operation* cond_call_op = CallFn(loc, get_cond_arg, cond_fn, &builder);
 
   assert(cond_call_op->getNumResults() == 1);
-  Value* condition = LowerCondition(loc, cond_call_op->getResult(0), &builder);
+  Value condition = LowerCondition(loc, cond_call_op->getResult(0), &builder);
   auto br_operands =
       PrepareValsForJump(loc, get_cond_arg, body_block, &builder);
   builder.create<CondBranchOp>(loc, condition, body_block, br_operands,
@@ -286,7 +280,7 @@ static bool LowerWhileOp(WhileOp op) {
   ReplaceOpResultWithBlockArgs(loc, op_inst, orig_block_tail, &builder);
   op_inst->erase();
 
-  return false;
+  return success();
 }
 
 void FunctionalControlFlowToCFG::runOnFunction() {
@@ -299,12 +293,17 @@ void FunctionalControlFlowToCFG::runOnFunction() {
       // subsequent blocks.
       //
       // TODO: Use PatternRewriter to eliminate these function control flow ops.
+
       if (IfOp if_op = llvm::dyn_cast<IfOp>(op)) {
-        if (LowerIfOp(if_op)) return signalPassFailure();
+        if (failed(LowerIfOp(if_op))) {
+          return signalPassFailure();
+        }
         break;
       }
       if (WhileOp while_op = llvm::dyn_cast<WhileOp>(op)) {
-        if (LowerWhileOp(while_op)) return signalPassFailure();
+        if (failed(LowerWhileOp(while_op))) {
+          return signalPassFailure();
+        }
         break;
       }
     }
@@ -313,8 +312,8 @@ void FunctionalControlFlowToCFG::runOnFunction() {
 
 }  // namespace
 
-FunctionPassBase* CreateTFFunctionalControlFlowToCFG() {
-  return new FunctionalControlFlowToCFG();
+std::unique_ptr<OpPassBase<FuncOp>> CreateTFFunctionalControlFlowToCFG() {
+  return std::make_unique<FunctionalControlFlowToCFG>();
 }
 
 static PassRegistration<FunctionalControlFlowToCFG> pass(

@@ -26,50 +26,83 @@ typedef Eigen::GpuDevice GPUDevice;
 
 namespace functor {
 
+// TODO(ezhulenev): Use CUB reductions on GPU.
+template <typename T, typename U>
+struct FusedBatchNormFreezeGrad<GPUDevice, T, U> {
+  void operator()(OpKernelContext* context, const Tensor& y_backprop_input,
+                  const Tensor& x_input, const Tensor& scale_input,
+                  const Tensor& pop_mean_input,
+                  const Tensor& pop_variance_input, U epsilon,
+                  Tensor* x_backprop_output, Tensor* scale_backprop_output,
+                  Tensor* offset_backprop_output) {
+    typename TTypes<T, 4>::ConstTensor y_backprop(
+        y_backprop_input.tensor<T, 4>());
+    typename TTypes<T, 4>::ConstTensor input(x_input.tensor<T, 4>());
+    typename TTypes<U>::ConstVec scale(scale_input.vec<U>());
+    typename TTypes<U>::ConstVec pop_mean(pop_mean_input.vec<U>());
+    typename TTypes<U>::ConstVec pop_var(pop_variance_input.vec<U>());
+    typename TTypes<T, 4>::Tensor x_backprop(x_backprop_output->tensor<T, 4>());
+    typename TTypes<U>::Vec scale_backprop(scale_backprop_output->vec<U>());
+    typename TTypes<U>::Vec offset_backprop(offset_backprop_output->vec<U>());
+
+    const int depth = pop_mean.dimension(0);
+    const int rest_size = input.size() / depth;
+
+    // Allocate two temporary workspaces of [depth] shape.
+    Tensor scratch1_vec, scratch2_vec;
+    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
+                                                   {depth}, &scratch1_vec));
+    OP_REQUIRES_OK(context, context->allocate_temp(DataTypeToEnum<U>::value,
+                                                   {depth}, &scratch2_vec));
+
+    typename TTypes<U>::Vec scratch1(scratch1_vec.vec<U>());
+    typename TTypes<U>::Vec scratch2(scratch2_vec.vec<U>());
+
+    const GPUDevice& d = context->eigen_device<GPUDevice>();
+
+    Eigen::DSizes<Eigen::Index, 2> rest_by_depth(rest_size, depth);
+#if !defined(EIGEN_HAS_INDEX_LIST)
+    Eigen::DSizes<Eigen::Index, 2> one_by_depth(1, depth);
+    Eigen::array<int, 1> reduction_axis{0};
+    Eigen::array<int, 2> rest_by_one({rest_size, 1});
+#else
+    Eigen::IndexList<Eigen::type2index<1>, Eigen::Index> one_by_depth;
+    one_by_depth.set(1, depth);
+    Eigen::IndexList<Eigen::type2index<0> > reduction_axis;
+    Eigen::IndexList<Eigen::Index, Eigen::type2index<1> > rest_by_one;
+    rest_by_one.set(0, rest_size);
+#endif
+
+    // offset_backprop  = sum(y_backprop)
+    // scale_backprop = y_backprop * ((x - pop_mean) * rsqrt(pop_var + epsilon))
+    // x_backprop = y_backprop * (scale * rsqrt(pop_var + epsilon))
+
+    auto y_backprop_rest_by_depth =
+        y_backprop.reshape(rest_by_depth).template cast<U>();
+    auto input_rest_by_depth = input.reshape(rest_by_depth).template cast<U>();
+
+    offset_backprop.device(d) = y_backprop_rest_by_depth.sum(reduction_axis);
+
+    // scratch1 = rsqrt(pop_var + epsilon)
+    scratch1.device(d) = (pop_var + pop_var.constant(epsilon)).rsqrt();
+
+    // scratch2 = sum(y_backprop * (x - mean))
+    scratch2.device(d) =
+        (y_backprop_rest_by_depth *
+         (input_rest_by_depth -
+          pop_mean.reshape(one_by_depth).broadcast(rest_by_one)))
+            .sum(reduction_axis);
+
+    x_backprop.reshape(rest_by_depth).device(d) =
+        (y_backprop_rest_by_depth *
+         ((scratch1 * scale).reshape(one_by_depth).broadcast(rest_by_one)))
+            .template cast<T>();
+    scale_backprop.device(d) = scratch2 * scratch1;
+  }
+};
+
 template struct FusedBatchNormFreezeGrad<GPUDevice, float, float>;
 template struct FusedBatchNormFreezeGrad<GPUDevice, Eigen::half, float>;
-
-template <class T>
-__global__ void VarianceToInvVarianceKernel(int nthreads, const T* input,
-                                            double epsilon, T* output) {
-  GPU_1D_KERNEL_LOOP(index, nthreads) {
-    output[index] = rsqrt(input[index] + T(epsilon));
-  }
-}
-
-template <class T>
-void VarianceToInvVariance<T>::operator()(const Eigen::GpuDevice& d,
-                                          const T* variance, double epsilon,
-                                          int channels, T* inv_variance) {
-  GpuLaunchConfig config = GetGpuLaunchConfig(channels, d);
-  TF_CHECK_OK(GpuLaunchKernel(VarianceToInvVarianceKernel<T>,
-                              config.block_count, config.thread_per_block, 0,
-                              d.stream(), config.virtual_thread_count, variance,
-                              epsilon, inv_variance));
-}
-
-template <class T>
-__global__ void InvVarianceToVarianceKernel(int nthreads, double epsilon,
-                                            int sample_size, T* variance) {
-  GPU_1D_KERNEL_LOOP(index, nthreads) {
-    T inv_var = variance[index];
-    T var = __fdividef(1, inv_var * inv_var) - T(epsilon);
-    // This is for Bessel's correction
-    var *= T(sample_size) / T((sample_size > 1) ? sample_size - 1 : 1);
-    variance[index] = (var > 0) ? var : 0;
-  }
-}
-
-template <class T>
-void InvVarianceToVariance<T>::operator()(const Eigen::GpuDevice& d,
-                                          double epsilon, int sample_size,
-                                          int channels, T* variance) {
-  GpuLaunchConfig config = GetGpuLaunchConfig(channels, d);
-  TF_CHECK_OK(GpuLaunchKernel(InvVarianceToVarianceKernel<T>,
-                              config.block_count, config.thread_per_block, 0,
-                              d.stream(), config.virtual_thread_count, epsilon,
-                              sample_size, variance));
-}
 
 template <class T>
 void SetNanFunctor<T>::operator()(const Eigen::GpuDevice& d,
@@ -78,8 +111,6 @@ void SetNanFunctor<T>::operator()(const Eigen::GpuDevice& d,
       To32Bit(out).constant(Eigen::NumTraits<T>::quiet_NaN());
 }
 
-template class VarianceToInvVariance<float>;
-template class InvVarianceToVariance<float>;
 template class SetNanFunctor<float>;
 
 // -------------------------------------------------------------------------- //
@@ -97,9 +128,13 @@ struct FusedBatchNormInferenceKernel {
                 "Unsupported data format");
 
   __device__ static void run(int32 count, int32 channels_size,
-                             int32 inner_dim_size, const T* in, const U* scale,
-                             const U* offset, const U* mean, const U* var,
-                             const T* side_input, float epsilon, T* out) {
+                             int32 inner_dim_size, const T* __restrict__ in,
+                             const U* __restrict__ scale,
+                             const U* __restrict__ offset,
+                             const U* __restrict__ mean,
+                             const U* __restrict__ var,
+                             const T* __restrict__ side_input, float epsilon,
+                             T* __restrict__ out) {
     int32 index = blockIdx.x * blockDim.x + threadIdx.x;
     const int32 total_device_threads = gridDim.x * blockDim.x;
 
@@ -150,9 +185,13 @@ struct FusedBatchNormInferenceKernel<Eigen::half, float, tensor_format,
                                     /*is_generic_kernel=*/true>;
 
   __device__ static void run(int32 count, int32 channels_size,
-                             int32 inner_dim_size, const T* in, const U* scale,
-                             const U* offset, const U* mean, const U* var,
-                             const T* side_input, float epsilon, T* out) {
+                             int32 inner_dim_size, const T* __restrict__ in,
+                             const U* __restrict__ scale,
+                             const U* __restrict__ offset,
+                             const U* __restrict__ mean,
+                             const U* __restrict__ var,
+                             const T* __restrict__ side_input, float epsilon,
+                             T* __restrict__ out) {
     // Old GPUs do not have (or have very slow) fp16 arithmetic.
 #if __CUDA_ARCH__ >= 610
     int32 index = blockIdx.x * blockDim.x + threadIdx.x;

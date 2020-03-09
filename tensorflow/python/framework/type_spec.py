@@ -19,13 +19,15 @@ from __future__ import division
 from __future__ import print_function
 
 import abc
+
 import numpy as np
 import six
 
-from tensorflow.python import pywrap_tensorflow
+from tensorflow.python import _pywrap_utils
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import tensor_shape
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.util import compat
 from tensorflow.python.util import nest
 from tensorflow.python.util import tf_decorator
@@ -41,8 +43,7 @@ ops = LazyLoader(
     "tensorflow.python.framework.ops")
 
 
-# TODO(b/133606651) Deprecate the tf.data.experimental.Structure endpoint.
-@tf_export("TypeSpec", "data.experimental.Structure")
+@tf_export("TypeSpec", v1=["TypeSpec", "data.experimental.Structure"])
 @six.add_metaclass(abc.ABCMeta)
 class TypeSpec(object):
   """Specifies a TensorFlow value type.
@@ -50,6 +51,13 @@ class TypeSpec(object):
   A `tf.TypeSpec` provides metadata describing an object accepted or returned
   by TensorFlow APIs.  Concrete subclasses, such as `tf.TensorSpec` and
   `tf.RaggedTensorSpec`, are used to describe different value types.
+
+  For example, `tf.function`'s `input_signature` argument accepts a list
+  (or nested structure) of `TypeSpec`s.
+
+  Creating new subclasses of TypeSpec (outside of TensorFlow core) is not
+  currently supported.  In particular, we may make breaking changes to the
+  private methods and properties defined by this base class.
   """
   # === Subclassing ===
   #
@@ -142,7 +150,7 @@ class TypeSpec(object):
 
     Args:
       components: A nested structure of `tf.Tensor` or `tf.CompositeTensor`,
-        compatible with `self._component_specs`.  (Caller is repsonsible for
+        compatible with `self._component_specs`.  (Caller is responsible for
         ensuring compatibility.)
 
     Returns:
@@ -254,7 +262,8 @@ class TypeSpec(object):
 
   def __eq__(self, other):
     # pylint: disable=protected-access
-    return self.__get_cmp_key() == other.__get_cmp_key()
+    return (type(other) is type(self) and
+            self.__get_cmp_key() == other.__get_cmp_key())
 
   def __ne__(self, other):
     return not self == other
@@ -316,6 +325,8 @@ class TypeSpec(object):
       ])
     if isinstance(value, tuple):
       return tuple([self.__make_cmp_key(v) for v in value])
+    if isinstance(value, list):
+      return (list, tuple([self.__make_cmp_key(v) for v in value]))
     if isinstance(value, tensor_shape.TensorShape):
       if value.ndims is None:
         # Note: we include a type object in the tuple, to ensure we can't get
@@ -341,7 +352,7 @@ class TypeSpec(object):
     """Returns true if the given type serializations compatible."""
     if type(a) is not type(b):
       return False
-    if isinstance(a, tuple):
+    if isinstance(a, (list, tuple)):
       return (len(a) == len(b) and
               all(TypeSpec.__is_compatible(x, y) for (x, y) in zip(a, b)))
     if isinstance(a, dict):
@@ -362,7 +373,7 @@ class TypeSpec(object):
     * If they are both dicts with the same keys, then recursively combine
       the respective dict elements.
     * If they are both TypeSpecs, then combine using
-      TypeSpec.most_specific_comptible_type.
+      TypeSpec.most_specific_compatible_type.
     * If they are both TensorShapes, then combine using
       TensorShape.most_specific_compatible_shape.
     * If they are both TensorSpecs with the same dtype, then combine using
@@ -382,7 +393,7 @@ class TypeSpec(object):
     """
     if type(a) is not type(b):
       raise ValueError("Types are not compatible: %r vs %r" % (a, b))
-    if isinstance(a, tuple):
+    if isinstance(a, (list, tuple)):
       if len(a) != len(b):
         raise ValueError("Types are not compatible: %r vs %r" % (a, b))
       return tuple(TypeSpec.__most_specific_compatible_type_serialization(x, y)
@@ -476,8 +487,9 @@ def type_spec_from_value(value):
     spec = _type_spec_from_value(tensor)
     if spec is not None:
       return spec
-  except (ValueError, TypeError):
-    pass
+  except (ValueError, TypeError) as e:
+    logging.vlog(
+        3, "Failed to convert %r to tensor: %s" % (type(value).__name__, e))
 
   raise TypeError("Could not build a TypeSpec for %r with type %s" %
                   (value, type(value).__name__))
@@ -539,4 +551,4 @@ def register_type_spec_from_value_converter(type_object, converter_fn,
       (type_object, converter_fn, allow_subclass))
 
 
-pywrap_tensorflow.RegisterType("TypeSpec", TypeSpec)
+_pywrap_utils.RegisterType("TypeSpec", TypeSpec)

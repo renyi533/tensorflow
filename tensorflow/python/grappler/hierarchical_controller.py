@@ -26,6 +26,7 @@ from __future__ import division
 from __future__ import print_function
 
 import math
+
 import numpy as np
 import six
 from tensorflow.python.framework import constant_op
@@ -192,11 +193,11 @@ class HierarchicalController(Controller):
           [self.hparams.grouping_hidden_size, self.num_groups])
       if self.hparams.bi_lstm:
         variable_scope.get_variable("encoder_lstm_forward", [
-            self.embedding_size + self.hparams.hidden_size / 2,
+            self.embedding_size + self.hparams.hidden_size // 2,
             2 * self.hparams.hidden_size
         ])
         variable_scope.get_variable("encoder_lstm_backward", [
-            self.embedding_size + self.hparams.hidden_size / 2,
+            self.embedding_size + self.hparams.hidden_size // 2,
             2 * self.hparams.hidden_size
         ])
         variable_scope.get_variable(
@@ -883,7 +884,7 @@ class HierarchicalController(Controller):
                                                  actions.read(i - 1))
       )
       if self.hparams.keep_prob is not None:
-        signal = nn_ops.dropout(signal, self.hparams.keep_prob)
+        signal = nn_ops.dropout(signal, rate=(1 - self.hparams.keep_prob))
       next_c, next_h = lstm(signal, prev_c, prev_h, w_lstm, forget_bias)
       query = math_ops.matmul(next_h, attn_w_2)
       query = array_ops.reshape(

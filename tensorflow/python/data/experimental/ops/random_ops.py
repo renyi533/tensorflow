@@ -19,11 +19,11 @@ from __future__ import print_function
 
 import functools
 
-from tensorflow.python.compat import compat
+from tensorflow.python import tf2
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.util import random_seed
-from tensorflow.python.data.util import structure
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import tensor_spec
 from tensorflow.python.ops import gen_experimental_dataset_ops
 from tensorflow.python.util.tf_export import tf_export
 
@@ -35,17 +35,13 @@ class RandomDatasetV2(dataset_ops.DatasetSource):
   def __init__(self, seed=None):
     """A `Dataset` of pseudorandom values."""
     self._seed, self._seed2 = random_seed.get_seed(seed)
-    if compat.forward_compatible(2019, 8, 3):
-      variant_tensor = gen_experimental_dataset_ops.random_dataset(
-          seed=self._seed, seed2=self._seed2, **self._flat_structure)
-    else:
-      variant_tensor = gen_experimental_dataset_ops.experimental_random_dataset(
-          seed=self._seed, seed2=self._seed2, **self._flat_structure)
+    variant_tensor = gen_experimental_dataset_ops.random_dataset(
+        seed=self._seed, seed2=self._seed2, **self._flat_structure)
     super(RandomDatasetV2, self).__init__(variant_tensor)
 
   @property
   def element_spec(self):
-    return structure.TensorStructure(dtypes.int64, [])
+    return tensor_spec.TensorSpec([], dtypes.int64)
 
 
 @tf_export(v1=["data.experimental.RandomDataset"])
@@ -58,6 +54,7 @@ class RandomDatasetV1(dataset_ops.DatasetV1Adapter):
     super(RandomDatasetV1, self).__init__(wrapped)
 
 
-# TODO(b/119044825): Until all `tf.data` unit tests are converted to V2, keep
-# this alias in place.
-RandomDataset = RandomDatasetV1
+if tf2.enabled():
+  RandomDataset = RandomDatasetV2
+else:
+  RandomDataset = RandomDatasetV1

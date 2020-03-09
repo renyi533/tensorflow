@@ -38,14 +38,11 @@ class Reshape : public NodeShader {
     auto output = ctx.graph->FindOutputs(ctx.node->id)[0];
     if (input->tensor.shape.DimensionsProduct() !=
         output->tensor.shape.DimensionsProduct()) {
-      return InvalidArgumentError("Dimensions product is reshape don't match");
+      return InvalidArgumentError(
+          "Number of elements in input & output tensors don't match.");
     }
     auto attr =
         absl::any_cast<ReshapeAttributes>(ctx.node->operation.attributes);
-    if (input->tensor.shape.DimensionsProduct() !=
-        output->tensor.shape.DimensionsProduct()) {
-      return InvalidArgumentError("Dimensions product is reshape don't match");
-    }
     if (attr.new_shape != output->tensor.shape) {
       return InvalidArgumentError(
           "Dimensions for output does not match new_shape attribute");
@@ -76,6 +73,7 @@ class Reshape : public NodeShader {
             {"output_channels", output->tensor.shape.c},
         },
         /*objects=*/{},
+        /*shared_variables=*/{},
         /*workload=*/uint3(),
         /*workgroup=*/uint3(),
         /*source_code=*/std::move(code),

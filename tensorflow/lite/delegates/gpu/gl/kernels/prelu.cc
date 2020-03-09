@@ -56,6 +56,7 @@ class PReLULinearAlpha : public NodeShader {
             ? GeneratedCode{
                   /*parameters=*/{{"clip", attr.clip}},
                   /*objects=*/{{"alpha", MakeReadonlyObject(alpha->data)}},
+                  /*shared_variables=*/{},
                   /*workload=*/uint3(),
                   /*workgroup=*/uint3(),
                   "value_0 = clamp(value_0, 0.0, $clip$) + $alpha[gid.z]$ * "
@@ -65,7 +66,8 @@ class PReLULinearAlpha : public NodeShader {
               }
             : GeneratedCode{
                   /*parameters=*/{},
-                  /*objects=*/{{"alpha", MakeReadonlyBuffer(alpha->data)}},
+                  /*objects=*/{{"alpha", MakeReadonlyObject(alpha->data)}},
+                  /*shared_variables=*/{},
                   // Declare workload explicitly because shader depends on
                   // gid.z.
                   /*workload=*/
@@ -100,7 +102,8 @@ class PReLUFull : public NodeShader {
 
     auto shape = output->tensor.shape;
 
-    ObjectSize obj_size = uint3(shape.h, shape.w, shape.c);
+    ObjectSize obj_size =
+        uint3(shape.w, shape.h, IntegralDivideRoundUp(shape.c, 4));
 
     *generated_code =
         attr.clip
@@ -109,6 +112,7 @@ class PReLUFull : public NodeShader {
                   /*objects=*/
                   {{"alpha",
                     MakeReadonlyObject(obj_size, ConvertToPHWC4(*alpha))}},
+                  /*shared_variables=*/{},
                   // Declare workload explicitly because shader
                   // depends on gid.z.
                   /*workload=*/
@@ -125,6 +129,7 @@ class PReLUFull : public NodeShader {
                   /*objects=*/
                   {{"alpha",
                     MakeReadonlyObject(obj_size, ConvertToPHWC4(*alpha))}},
+                  /*shared_variables=*/{},
                   // Declare workload explicitly because shader depends on
                   // gid.z.
                   /*workload=*/

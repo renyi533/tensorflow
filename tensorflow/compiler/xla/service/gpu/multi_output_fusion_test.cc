@@ -45,6 +45,18 @@ const char kModulePrefix[] = R"(
       ROOT mul.1 = f32[] multiply(scalar_lhs.1, scalar_rhs.1)
     })";
 
+static int64 CountMultiOutputFusions(const HloModule* module) {
+  int multi_output_fusion_count = 0;
+  for (auto* computation : module->MakeNonfusionComputations()) {
+    for (auto* instr : computation->instructions()) {
+      if (instr->IsMultiOutputFusion()) {
+        multi_output_fusion_count++;
+      }
+    }
+  }
+  return multi_output_fusion_count;
+}
+
 TEST_F(MultiOutputFusionTest, MultiOutputFusionSiblingReduceAndReduceFusion) {
   // Fusion with reduce instruction root and a sibling reduce instruction
   // sharing the same input param.
@@ -390,12 +402,12 @@ TEST_F(MultiOutputFusionTest,
       fusion.1 = (f32[8,1,5,16,1,2]{5,4,3,2,1,0},
         f32[8,1,5,16,1,2]{5,4,3,2,1,0}) fusion(p0), kind=kLoop,
         calls=fused_computation_1
-      fusion.2 = f32[8,1,5,1,2]{4,3,2,1,0} fusion(p0), kind=kLoop,
+      fusion.2 = f32[1,5,1,2]{3,2,1,0} fusion(p0), kind=kLoop,
         calls=fused_computation_2
       gte0 = f32[8,1,5,16,1,2]{5,4,3,2,1,0} get-tuple-element(fusion.1), index=0
       gte1 = f32[8,1,5,16,1,2]{5,4,3,2,1,0} get-tuple-element(fusion.1), index=1
       ROOT root = (f32[8,1,5,16,1,2]{5,4,3,2,1,0},
-        f32[8,1,5,16,1,1]{5,4,3,2,1,0}, f32[8,1,5,1,1]{4,3,2,1,0})
+        f32[8,1,5,16,1,1]{5,4,3,2,1,0}, f32[1,5,1,2]{3,2,1,0})
         tuple(gte0, gte1, fusion.2)
     })"))
                     .ValueOrDie();
@@ -520,7 +532,7 @@ TEST_F(MultiOutputFusionTest, ProducerConsumerFusionDoNotFuseLoopReduceFusion) {
       p0 = f32[2,2,2]{2,1,0} parameter(0)
       p1 = f32[2,2,2]{2,1,0} parameter(1)
       element_wise = f32[2,2,2]{2,1,0} fusion(p0, p1), kind=kLoop, calls=fused_element_wise
-      fusion = (f32[2,2]{1,0}, f32[2,2]{1,0}) fusion(element_wise), kind=kLoop, calls=fused_reduce
+      fusion = f32[2,2]{1,0} fusion(element_wise), kind=kLoop, calls=fused_reduce
       ROOT root = (f32[2,2]{1,0}, f32[2,2,2]{2,1,0}) tuple(fusion, element_wise)
     })"))
                     .ValueOrDie();
@@ -657,6 +669,39 @@ TEST_F(MultiOutputFusionTest, ProducerConsumerFusionAvoidsCycles) {
                     .ValueOrDie();
   ASSERT_TRUE(GpuMultiOutputFusion().Run(module.get()).ValueOrDie());
   SCOPED_TRACE(module->ToString());
+  EXPECT_EQ(1, CountMultiOutputFusions(module.get()));
+}
+
+TEST_F(MultiOutputFusionTest, PreferFuseProducerIntoFusionConsumer) {
+  auto module = ParseAndReturnVerifiedModule(absl::StrCat(kModulePrefix, R"(
+    fused_add {
+      p0 = f32[32,32,32]{2,1,0} parameter(0)
+      p1 = f32[32,32,32]{2,1,0} parameter(1)
+      ROOT add = f32[32,32,32]{2,1,0} add(p0, p1)
+    }
+    fused_reduce {
+      p0 = f32[32,32,32]{2,1,0} parameter(0)
+      p1 = f32[64,64,64]{2,1,0} parameter(1)
+      slice = f32[32,32,32]{2,1,0} slice(p1), slice={[0:32], [0:32], [0:32]}
+      add = f32[32,32,32]{2,1,0} add(p0, slice)
+      c0 = f32[] constant(0)
+      ROOT r1 = f32[32,32]{1,0} reduce(add, c0), dimensions={2},
+        to_apply=scalar_add_computation
+    }
+    ENTRY reduce {
+      p0 = f32[32,32,32]{2,1,0} parameter(0)
+      p1 = f32[64,64,64]{2,1,0} parameter(1)
+      add = f32[32,32,32]{2,1,0} fusion(p0, p0), kind=kLoop, calls=fused_add
+      c0 = f32[] constant(0)
+      reduce2 = f32[32,32]{1,0} reduce(add, c0), dimensions={2},
+        to_apply=scalar_add_computation
+      reduce = f32[32,32]{1,0} fusion(add, p1), kind=kInput, calls=fused_reduce
+      ROOT root = (f32[32,32,32]{2,1,0}, f32[32,32]{1,0}, f32[32,32]{1,0})
+                  tuple(add, reduce, reduce2)
+    })"))
+                    .ValueOrDie();
+  ASSERT_TRUE(GpuMultiOutputFusion().Run(module.get()).ValueOrDie());
+  SCOPED_TRACE(module->ToString());
   int multi_output_fusion_count = 0;
   for (auto* computation : module->MakeNonfusionComputations()) {
     for (auto* instr : computation->instructions()) {
@@ -748,6 +793,60 @@ TEST_F(MultiOutputFusionTest, MultiOutputFusionDUS) {
     })")
                     .ValueOrDie();
   ASSERT_FALSE(GpuMultiOutputFusion().Run(module.get()).ValueOrDie());
+}
+
+// Check that we don't fuse too many reductions together.
+TEST_F(MultiOutputFusionTest, SharedMemoryBudget) {
+  auto module = ParseAndReturnVerifiedModule(absl::StrCat(kModulePrefix, R"(
+    ENTRY computation {
+      zero = f32[] constant(0)
+      param0 = f32[64,64] parameter(0)
+      param1 = f32[64,64] parameter(1)
+      param2 = f32[64,64] parameter(2)
+      param3 = f32[64,64] parameter(3)
+      param4 = f32[64,64] parameter(4)
+      param5 = f32[64,64] parameter(5)
+      param6 = f32[64,64] parameter(6)
+      param7 = f32[64,64] parameter(7)
+      param8 = f32[64,64] parameter(8)
+      param9 = f32[64,64] parameter(9)
+      add0 = f32[64,64] add(param0, param1)
+      add1 = f32[64,64] add(param1, param2)
+      add2 = f32[64,64] add(param2, param3)
+      add3 = f32[64,64] add(param3, param4)
+      add4 = f32[64,64] add(param4, param5)
+      add5 = f32[64,64] add(param5, param6)
+      add6 = f32[64,64] add(param6, param7)
+      add7 = f32[64,64] add(param7, param8)
+      add8 = f32[64,64] add(param8, param9)
+      add9 = f32[64,64] add(param9, param0)
+      out0 = f32[64] reduce(f32[64,64] add0, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out1 = f32[64] reduce(f32[64,64] add1, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out2 = f32[64] reduce(f32[64,64] add2, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out3 = f32[64] reduce(f32[64,64] add3, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out4 = f32[64] reduce(f32[64,64] add4, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out5 = f32[64] reduce(f32[64,64] add5, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out6 = f32[64] reduce(f32[64,64] add6, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out7 = f32[64] reduce(f32[64,64] add7, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out8 = f32[64] reduce(f32[64,64] add8, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      out9 = f32[64] reduce(f32[64,64] add9, f32[] zero), dimensions={0},
+        to_apply=scalar_add_computation
+      ROOT out = (f32[64], f32[64], f32[64], f32[64], f32[64], f32[64], f32[64], f32[64], f32[64]) tuple(f32[64] out0, f32[64] out1, f32[64] out2, f32[64] out3, f32[64] out4, f32[64] out5, f32[64] out6, f32[64] out7, f32[64] out8, f32[64] out9)
+    }
+  )"))
+                    .ValueOrDie();
+  ASSERT_TRUE(GpuMultiOutputFusion().Run(module.get()).ConsumeValueOrDie());
+
+  EXPECT_EQ(2, CountMultiOutputFusions(module.get()));
 }
 
 }  // namespace gpu

@@ -34,6 +34,7 @@ from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_util
 from tensorflow.python.keras.engine import training as model_lib
 from tensorflow.python.keras.optimizer_v2 import adadelta
+from tensorflow.python.keras.optimizer_v2 import rmsprop
 from tensorflow.python.keras.saving import saved_model_experimental as keras_saved_model
 from tensorflow.python.keras.utils import mode_keys
 from tensorflow.python.keras.utils import tf_utils
@@ -44,7 +45,8 @@ from tensorflow.python.saved_model import model_utils
 from tensorflow.python.training import training as training_module
 
 
-class TestModelSavingandLoading(test.TestCase):
+@test_util.run_deprecated_v1  # Removed in v2.
+class TestModelSavingandLoading(parameterized.TestCase, test.TestCase):
 
   def _save_model_dir(self, dirname='saved_model'):
     temp_dir = self.get_temp_dir()
@@ -59,7 +61,7 @@ class TestModelSavingandLoading(test.TestCase):
       model.add(keras.layers.TimeDistributed(keras.layers.Dense(3)))
       model.compile(
           loss=keras.losses.MSE,
-          optimizer=keras.optimizers.RMSprop(lr=0.0001),
+          optimizer=rmsprop.RMSprop(lr=0.0001),
           metrics=[keras.metrics.categorical_accuracy],
           sample_weight_mode='temporal')
       x = np.random.random((1, 3))
@@ -75,7 +77,6 @@ class TestModelSavingandLoading(test.TestCase):
       y = loaded_model.predict(x)
       self.assertAllClose(ref_y, y, atol=1e-05)
 
-  @test_util.run_in_graph_and_eager_modes
   def test_saving_sequential_model_without_compile(self):
     with self.cached_session():
       model = keras.models.Sequential()
@@ -102,7 +103,7 @@ class TestModelSavingandLoading(test.TestCase):
       model = keras.models.Model(inputs, output)
       model.compile(
           loss=keras.losses.MSE,
-          optimizer=keras.optimizers.RMSprop(lr=0.0001),
+          optimizer=rmsprop.RMSprop(lr=0.0001),
           metrics=[keras.metrics.categorical_accuracy])
       x = np.random.random((1, 3))
       y = np.random.random((1, 3))
@@ -117,7 +118,6 @@ class TestModelSavingandLoading(test.TestCase):
       y = loaded_model.predict(x)
       self.assertAllClose(ref_y, y, atol=1e-05)
 
-  @test_util.run_in_graph_and_eager_modes
   def test_saving_functional_model_without_compile(self):
     with self.cached_session():
       inputs = keras.layers.Input(shape=(3,))
@@ -138,7 +138,6 @@ class TestModelSavingandLoading(test.TestCase):
       y = loaded_model.predict(x)
       self.assertAllClose(ref_y, y, atol=1e-05)
 
-  @test_util.run_in_graph_and_eager_modes
   def test_saving_with_tf_optimizer(self):
     model = keras.models.Sequential()
     model.add(keras.layers.Dense(2, input_shape=(3,)))
@@ -280,7 +279,7 @@ def load_model(sess, path, mode):
   return inputs, outputs, meta_graph_def
 
 
-@test_util.run_all_in_graph_and_eager_modes
+@test_util.run_deprecated_v1  # Removed in v2.
 class TestModelSavedModelExport(test.TestCase, parameterized.TestCase):
 
   def _save_model_dir(self, dirname='saved_model'):

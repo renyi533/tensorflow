@@ -21,25 +21,28 @@ namespace mlir {
 
 StatusScopedDiagnosticHandler::StatusScopedDiagnosticHandler(
     MLIRContext* context, bool propagate)
-    : ScopedDiagnosticHandler(context), propagate_(propagate) {
-  context->getDiagEngine().setHandler(
-      [this](Diagnostic diag) { this->handler(std::move(diag)); });
+    : SourceMgrDiagnosticHandler(source_mgr_, context, diag_stream_),
+      diag_stream_(diag_str_),
+      propagate_(propagate) {
+  setHandler([this](Diagnostic& diag) { return this->handler(&diag); });
 }
 
 StatusScopedDiagnosticHandler::~StatusScopedDiagnosticHandler() {
   // Verify errors were consumed and re-register old handler.
   bool all_errors_produced_were_consumed = ok();
   DCHECK(all_errors_produced_were_consumed) << "Error status not consumed:\n"
-                                            << instr_str_;
+                                            << diag_str_;
 }
 
-bool StatusScopedDiagnosticHandler::ok() const { return instr_str_.empty(); }
+bool StatusScopedDiagnosticHandler::ok() const { return diag_str_.empty(); }
 
 Status StatusScopedDiagnosticHandler::ConsumeStatus() {
   if (ok()) return Status::OK();
 
-  Status s = tensorflow::errors::Unknown(instr_str_);
-  instr_str_.clear();
+  // TODO(jpienaar) This should be combining status with one previously built
+  // up.
+  Status s = tensorflow::errors::Unknown(diag_str_);
+  diag_str_.clear();
   return s;
 }
 
@@ -54,35 +57,30 @@ Status StatusScopedDiagnosticHandler::Combine(Status status) {
   // TensorFlow's AppendToMessage without the additional formatting inserted
   // there.
   status = ::tensorflow::Status(
-      status.code(), absl::StrCat(status.error_message(), instr_str_));
-  instr_str_.clear();
+      status.code(), absl::StrCat(status.error_message(), diag_str_));
+  diag_str_.clear();
   return status;
 }
 
-void StatusScopedDiagnosticHandler::handler(Diagnostic diag) {
-  // Skip notes and warnings.
-  if (diag.getSeverity() != DiagnosticSeverity::Error) {
-#ifndef NDEBUG
-    VLOG(1) << "Non-error diagnostic: " << diag.str();
-    for (auto& note : diag.getNotes())
-      VLOG(1) << "Non-error diagnostic: " << note.str();
-#endif
-    return;
+LogicalResult StatusScopedDiagnosticHandler::handler(Diagnostic* diag) {
+  // Non-error diagnostic are ignored when VLOG isn't enabled.
+  if (diag->getSeverity() != DiagnosticSeverity::Error && VLOG_IS_ON(1))
+    return success();
+
+  size_t current_diag_str_size_ = diag_str_.size();
+
+  // Emit the diagnostic and flush the stream.
+  emitDiagnostic(*diag);
+  diag_stream_.flush();
+
+  // Emit non-errors to VLOG instead of the internal status.
+  if (diag->getSeverity() != DiagnosticSeverity::Error) {
+    VLOG(1) << diag_str_.substr(current_diag_str_size_);
+    diag_str_.resize(current_diag_str_size_);
   }
 
-  // Indent the diagnostic message to effectively show the diagnostics reported
-  // as nested under the returned Status's message.
-  llvm::raw_string_ostream os(instr_str_);
-  os.indent(2);
-  if (auto fileLoc = diag.getLocation().dyn_cast<FileLineColLoc>())
-    os << fileLoc.getFilename() << ':' << fileLoc.getLine() << ':'
-       << fileLoc.getColumn() << ": ";
-  os << "error: " << diag << '\n';
-
-  // Propagate error if needed.
-  if (propagate_) {
-    propagateDiagnostic(std::move(diag));
-  }
+  // Return failure to signal propagation if necessary.
+  return failure(propagate_);
 }
 
 }  // namespace mlir

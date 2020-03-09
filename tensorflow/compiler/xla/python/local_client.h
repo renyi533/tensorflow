@@ -16,214 +16,144 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_PYTHON_LOCAL_CLIENT_H_
 #define TENSORFLOW_COMPILER_XLA_PYTHON_LOCAL_CLIENT_H_
 
-#include <deque>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/synchronization/notification.h"
 #include "absl/types/span.h"
-#include "include/pybind11/pybind11.h"
 #include "tensorflow/compiler/xla/client/executable_build_options.h"
 #include "tensorflow/compiler/xla/client/local_client.h"
 #include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/python/python_ref_manager.h"
+#include "tensorflow/compiler/xla/python/local_device_state.h"
 #include "tensorflow/compiler/xla/python/shared_device_buffer.h"
-#include "tensorflow/compiler/xla/python/worker_thread.h"
 #include "tensorflow/compiler/xla/service/computation_placer.h"
+#include "tensorflow/compiler/xla/service/gpu/gpu_executable_run_options.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/shape.h"
 #include "tensorflow/compiler/xla/status.h"
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/lib/core/status.h"
 
 namespace xla {
 
-// Registers a 'fn_capsule' as a CPU custom call target.
-// 'fn_capsule' is a void* pointer encapsulated in a PyCapsule object, with name
-// "xla._CPU_CUSTOM_CALL_TARGET".
-Status RegisterCpuCustomCallTarget(const std::string& fn_name,
-                                   pybind11::capsule capsule);
-
-// Class that encapsulates state relating to a device (e.g., a GPU) on which we
-// can perform computation and transfers.
 class Device {
  public:
-  // If use_multiple_streams is true, we allocate separate streams for compute
-  // and transfers. If it is false, we share a single stream for compute and
-  // transfers. The CPU device does not support multiple streams, and this is
-  // a workaround until it does.
-  //
-  // If synchronous_deallocation is true, the host must not free buffers until
-  // compute/transfers that use those buffers have completed. For example, this
-  // typically is the case for the "platform" where compute/transfers are
-  // operations that take place on another thread.
-  //
-  // If asynchronous is false, the host will synchronize to the device after
-  // each execution or transfer. This is intended for debugging only.
-  Device(se::StreamExecutor* executor, bool use_multiple_streams,
-         bool synchronous_deallocation, bool asynchronous);
-  virtual ~Device();
+  explicit Device(int id, std::unique_ptr<LocalDeviceState> local_device_state,
+                  absl::string_view platform_name, int host_id = 0)
+      : id_(id),
+        local_device_state_(std::move(local_device_state)),
+        host_id_(host_id),
+        platform_name_(platform_name) {}
+  virtual ~Device() {}
 
-  bool use_multiple_streams() const { return use_multiple_streams_; }
-  bool synchronous_deallocation() const { return synchronous_deallocation_; }
-  bool asynchronous() const { return asynchronous_; }
-  se::Stream* compute_stream() const { return compute_stream_.get(); }
-  se::Stream* host_to_device_stream() const {
-    return host_to_device_stream_.get();
-  }
-  se::Stream* device_to_host_stream() const {
-    return device_to_host_stream_.get();
+  // The ID of this device. IDs are unique among devices of this type
+  // (e.g. CPUs, GPUs). On multi-host platforms, this will be unique across all
+  // hosts' devices.  This is the ID that should be used in a DeviceAssignment.
+  int id() const { return id_; }
+
+  // If this is a device local to this host, returns a LocalDeviceState object
+  // that can be used to manipulate the device. Returns nullptr if the device is
+  // not local to this host.
+  LocalDeviceState* local_device_state() const {
+    return local_device_state_.get();
   }
 
-  // Returns a device to device stream. Allocates streams in a round-robin
-  // fashion amongst the available streams.
-  se::Stream* GetDeviceToDeviceStream();
+  // If this is a device local to this host, returns a LocalDeviceState object
+  // that can be used to manipulate the device. Returns an error if the device
+  // is not local to this host.
+  StatusOr<LocalDeviceState*> GetLocalDeviceState() const;
 
-  // Enqueues a copy of `src_buffer` to `dst_buffer` onto `src_stream`.
-  virtual Status ThenMemcpyDeviceToDevice(se::Stream* src_stream,
-                                          se::Stream* dst_stream,
-                                          se::DeviceMemoryBase src_buffer,
-                                          se::DeviceMemoryBase dst_buffer);
+  // The ID of this device's host. This is always 0 on single-host platforms.
+  int host_id() const { return host_id_; }
 
-  // A worker thread, used for replicated computation launches and callbacks.
-  WorkerThread* worker_thread() const { return worker_thread_.get(); }
+  const std::string& platform_name() const { return platform_name_; }
 
-  // Enqueues a host callback on 'stream', to be executed by worker_thread_.
-  // ThenDoHostCallback is often constrained in what it can do, in particular,
-  // on GPU the callback runs on a thread belonging to the GPU runtime and
-  // cannot perform GPU operations itself.
-  void ThenExecuteOnWorkerThread(se::Stream* stream,
-                                 std::function<void()> callback) const;
-
-  // Helper for releasing values from a callback at the tail of a stream.
-  // This is only permitted if object's destructor will not free any device
-  // objects, since the callback may be called from a device thread pool on
-  // GPU.
-  template <typename T>
-  void ThenRelease(se::Stream* stream, T object) const {
-    if (callback_stream_.get() != stream) {
-      callback_stream_->ThenWaitFor(stream);
-    }
-    callback_stream_->ThenDoHostCallback(
-        std::bind([](T& object) { /* releases object */ }, std::move(object)));
-  }
-
-  // Helpers for releasing values on a worker thread at the tail of a stream on
-  // a worker thread.
-  template <typename T>
-  void ThenReleaseOnWorkerThread(se::Stream* stream,
-                                 std::shared_ptr<T> object) const {
-    // We use a non-smart pointer here because we want to ensure that the worker
-    // thread is the only callee of the shared_ptr destructor, and if we passed
-    // object by lambda capture we have a race where the worker thread might
-    // run and release its reference first.
-    auto* ref = new std::shared_ptr<T>(std::move(object));
-    if (callback_stream_.get() != stream) {
-      callback_stream_->ThenWaitFor(stream);
-    }
-    ThenExecuteOnWorkerThread(callback_stream_.get(), [ref]() { delete ref; });
-  }
-  template <typename T>
-  void ThenReleaseOnWorkerThread(se::Stream* stream,
-                                 std::vector<std::shared_ptr<T>> object) const {
-    auto* ref = new std::vector<std::shared_ptr<T>>(std::move(object));
-    if (callback_stream_.get() != stream) {
-      callback_stream_->ThenWaitFor(stream);
-    }
-    ThenExecuteOnWorkerThread(callback_stream_.get(), [ref]() { delete ref; });
-  }
+  virtual std::string DebugString() const;
 
  private:
-  Status SynchronizeAllActivity();
-
-  bool use_multiple_streams_;
-  bool synchronous_deallocation_;
-  bool asynchronous_;
-  std::shared_ptr<se::Stream> compute_stream_;
-  std::shared_ptr<se::Stream> host_to_device_stream_;
-  std::shared_ptr<se::Stream> device_to_host_stream_;
-  std::vector<std::shared_ptr<se::Stream>> device_to_device_streams_;
-
-  // Number of device-to-device streams to create in the multistream case.
-  static constexpr int kNumDeviceToDeviceStreams = 4;
-
-  absl::Mutex mu_;
-  int next_device_to_device_stream_ GUARDED_BY(mu_) = 0;
-
-  // Callback stream is used for running short host-side callbacks after device
-  // side events, without preventing the device-side stream from doing useful
-  // work.
-  std::shared_ptr<se::Stream> callback_stream_;
-
-  std::unique_ptr<WorkerThread> worker_thread_;
-};
-
-struct AllocatorConfig {
-  enum class Kind {
-    kDefault,   // Client picks the best option for the platform.
-    kPlatform,  // The platform's default.
-    kBFC,  // Allocator using a "Best-Fit with Coalescing" algorithm. Currently
-           // only available for GPU.
-  };
-  Kind kind = Kind::kDefault;
-
-  // Only used if kind == kBFC. The maximum fraction of available memory to
-  // allocate.
-  double memory_fraction = 0.9;
-
-  // Only used if kind == kBFC. If true, the allocator will immediately allocate
-  // the maximum amount allowed by `memory_fraction`. This reduces
-  // fragmentation, allowing more of the total memory to be used. If false, the
-  // allocator will allocate more memory as allocations are requested.
-  bool preallocate = true;
+  const int id_;
+  const std::unique_ptr<LocalDeviceState> local_device_state_;
+  const int host_id_;
+  const std::string platform_name_;
 };
 
 // Encapsulates the state of Python session with XLA.
 class PyLocalClient {
  public:
-  // Initializes a local XLA client for `platform_name`. Returns an error if no
-  // such platform exists, or if the platform has no visible devices.
-  static StatusOr<std::shared_ptr<PyLocalClient>> Get(
-      const std::string& platform_name, const std::string& xla_platform_name,
-      bool asynchronous, const AllocatorConfig& allocator_config);
-
   // `allocator` may null, in which case the platform default allocator is used.
-  explicit PyLocalClient(std::string platform_name, LocalClient* client,
-                         std::vector<std::unique_ptr<Device>> devices,
-                         std::unique_ptr<se::DeviceMemoryAllocator> allocator,
-                         bool asynchronous);
+  explicit PyLocalClient(
+      std::string platform_name, LocalClient* client,
+      std::vector<std::shared_ptr<Device>> devices, int host_id,
+      std::unique_ptr<se::DeviceMemoryAllocator> allocator,
+      std::unique_ptr<tensorflow::Allocator> host_memory_allocator,
+      std::unique_ptr<GpuExecutableRunOptions> gpu_run_options);
   virtual ~PyLocalClient() = default;
 
-  Status TransferToInfeed(const LiteralSlice& literal, int device_ordinal);
-  StatusOr<pybind11::object> TransferFromOutfeed(const Shape& shape,
-                                                 int device_ordinal);
+  virtual StatusOr<DeviceAssignment> GetDefaultDeviceAssignment(
+      int num_replicas, int num_partitions) const;
 
-  int device_count() const { return client_->device_count(); }
-  Device& device(int device_ordinal) const {
-    return *devices_.at(device_ordinal);
+  int device_count() const { return devices_.size(); }
+  int local_device_count() const { return local_devices_.size(); }
+  const std::vector<std::shared_ptr<Device>>& devices() const {
+    return devices_;
   }
+  const std::vector<std::shared_ptr<Device>>& local_devices() const {
+    return local_devices_;
+  }
+  const std::map<int, std::shared_ptr<Device>>& id_to_device() const {
+    return id_to_device_;
+  }
+  int host_id() const { return host_id_; }
+  const std::string& platform_name() const { return platform_name_; }
+
+  LocalDeviceState& device_state(int device_ordinal) const {
+    return *local_devices_.at(device_ordinal)->local_device_state();
+  }
+
   LocalClient* client() const { return client_; }
   se::DeviceMemoryAllocator* allocator() const { return allocator_; }
+  tensorflow::Allocator* host_memory_allocator() const {
+    return host_memory_allocator_.get();
+  }
+
+  GpuExecutableRunOptions* gpu_run_options() const {
+    return gpu_run_options_.get();
+  }
 
   tensorflow::thread::ThreadPool* h2d_transfer_pool() {
     return &h2d_transfer_pool_;
   }
 
-  PythonRefManager& py_ref_manager() { return py_ref_manager_; }
+  // Most platforms expect device-to-device transfers to be enqueued on the
+  // source d2d stream, but some platforms use the destination d2d stream. This
+  // function specifies which one the platform expects.
+  virtual bool EnqueueD2DTransfersOnSrcStream() const { return true; }
 
  protected:
   std::string platform_name_;
   LocalClient* client_;
 
-  // py_ref_manager_ must come after devices_ in the class destruction order
-  // (i.e., appear first in the class.)
-  // Destruction of devices waits for them to quiesce; callbacks on device
-  // streams may refer to py_ref_manager_ and we must wait for them to complete.
-  PythonRefManager py_ref_manager_;
+  // Includes all devices, including non-local devices on multi-host platforms.
+  std::vector<std::shared_ptr<Device>> devices_;
+  // Maps Device::id() to the corresponding Device. Includes all devices.
+  std::map<int, std::shared_ptr<Device>> id_to_device_;
+  // Local devices indexed by local device ordinal.
+  std::vector<std::shared_ptr<Device>> local_devices_;
+  int host_id_;
 
-  std::vector<std::unique_ptr<Device>> devices_;
   se::DeviceMemoryAllocator* allocator_;
   std::unique_ptr<se::DeviceMemoryAllocator> owned_allocator_;
+
+  // Allocator to be used for staging memory transfers to devices. Optional;
+  // only used on GPU where it is more efficient to copy buffers to and from the
+  // device via a staging area of pinned memory.
+  std::unique_ptr<tensorflow::Allocator> host_memory_allocator_;
+
+  std::unique_ptr<GpuExecutableRunOptions> gpu_run_options_;
 
   tensorflow::thread::ThreadPool h2d_transfer_pool_;
 };
@@ -237,24 +167,24 @@ class PyLocalClient {
 // Thread-safe.
 class PyLocalBuffer {
  public:
-  static StatusOr<std::unique_ptr<PyLocalBuffer>> FromPython(
-      const pybind11::object& argument, std::shared_ptr<PyLocalClient> client,
-      int device_ordinal);
-
-  // Converts multiple (python object, device ordinal) pairs into
-  // PyLocalBuffers in parallel.
-  static StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> FromPythonValues(
-      const std::vector<std::pair<pybind11::object, int>>& argument,
-      std::shared_ptr<PyLocalClient> client);
+  // If `force_copy` is true, forces a copy of the input buffer on CPU.
+  // Otherwise the library is free to alias the output buffer with `data`.
+  // `buffer_reference` is an optional shared pointer that should be kept alive
+  // by the runtime as long as the contents of `data` may still be accessed by
+  // the runtime (may be nullptr).
+  static StatusOr<std::unique_ptr<PyLocalBuffer>> FromHostBuffer(
+      const void* data, const Shape& shape, bool force_copy,
+      std::shared_ptr<void> buffer_reference,
+      std::shared_ptr<PyLocalClient> client, std::shared_ptr<Device> device);
 
   static StatusOr<std::unique_ptr<PyLocalBuffer>> MakeTuple(
       const std::vector<PyLocalBuffer*> buffers,
-      std::shared_ptr<PyLocalClient> client, int device_ordinal);
+      std::shared_ptr<PyLocalClient> client, std::shared_ptr<Device> device);
 
-  PyLocalBuffer() = default;
-  PyLocalBuffer(Shape on_host_shape,
+  PyLocalBuffer(Shape on_host_shape, Shape on_device_shape,
                 std::shared_ptr<SharedDeviceBuffer> device_buffer,
-                std::shared_ptr<PyLocalClient> client);
+                std::shared_ptr<PyLocalClient> client,
+                std::shared_ptr<Device> device);
 
   PyLocalBuffer(const PyLocalBuffer&) = delete;
   PyLocalBuffer(PyLocalBuffer&&) = delete;
@@ -262,17 +192,20 @@ class PyLocalBuffer {
   PyLocalBuffer& operator=(PyLocalBuffer&&) = delete;
 
   const Shape& on_host_shape() const { return on_host_shape_; }
-  int device_ordinal() const { return device_ordinal_; }
+  const Shape& on_device_shape() const { return on_device_shape_; }
+  std::shared_ptr<Device> device() const { return device_; }
+  const std::string& platform_name() const { return client_->platform_name(); }
+  std::shared_ptr<PyLocalClient> client() const { return client_; }
 
   // Returns the buffer's value as a tuple DAG of Python arrays. If the value
   // has previously been prefetched to the host, then returns the prefetched
   // version, otherwise copies the buffer to the host. Blocks until the
   // value is ready.
-  StatusOr<pybind11::object> ToPython();
+  StatusOr<std::shared_ptr<Literal>> ToLiteral();
 
   // Initiates a copy of the buffer to the host. Does not block waiting for
   // the transfer to complete. The value can be retrieved by a later call to
-  // ToPython().
+  // ToLiteral().
   Status CopyToHostAsync();
 
   // Returns the associated device buffer. Returns a nullptr if the buffer is
@@ -290,8 +223,9 @@ class PyLocalBuffer {
   // Destructures a tuple-valued PyLocalBuffer into its constituent elements.
   StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> DestructureTuple();
 
-  // Copies the buffer to device `dst_device_ordinal`.
-  StatusOr<std::unique_ptr<PyLocalBuffer>> CopyToDevice(int dst_device_ordinal);
+  // Copies the buffer to device `dst_device`.
+  StatusOr<std::unique_ptr<PyLocalBuffer>> CopyToDevice(
+      std::shared_ptr<Device> dst_device);
 
   // Blocks the host until the buffer's value has been computed and is ready for
   // immediate use on the device. Useful in particular for timing benchmarks.
@@ -300,28 +234,40 @@ class PyLocalBuffer {
  private:
   const std::shared_ptr<PyLocalClient> client_;
   const Shape on_host_shape_;
-  const int device_ordinal_;
+  const Shape on_device_shape_;
+  const std::shared_ptr<Device> device_;
   mutable absl::Mutex mu_;
-  std::shared_ptr<SharedDeviceBuffer> device_buffer_ GUARDED_BY(mu_);
+  std::shared_ptr<SharedDeviceBuffer> device_buffer_ TF_GUARDED_BY(mu_);
 
   // The cached value of the buffer on the host, produced either from a call to
-  // CopyToHost or from a call to ToPython. Once a value has been fetched to
+  // CopyToHost or from a call to ToLiteral. Once a value has been fetched to
   // the host, it persists Delete() is called or the PyLocalBuffer is destroyed.
   struct HostValue {
     absl::Notification ready;
     // status and value are valid for reading only after `ready` has been
     // notified.
     Status status;
-    std::shared_ptr<xla::Literal> value;
+    std::shared_ptr<Literal> value;
   };
-  std::shared_ptr<HostValue> host_value_ GUARDED_BY(mu_);
+  std::shared_ptr<HostValue> host_value_ TF_GUARDED_BY(mu_);
 };
 
 // Represents a compiled computation that can be executed given handles to
-// device-allocated literals. Wraps an XLA LocalExecutable.
+// device-allocated literals. Wraps one or more XLA LocalExecutables (one per
+// partition, as specified by the build options).
 class PyLocalExecutable {
  public:
   // Compiles a computation to an executable.
+  static StatusOr<std::unique_ptr<PyLocalExecutable>> CompileForDevices(
+      const XlaComputation& computation,
+      absl::optional<std::vector<Shape>> argument_layouts,
+      const ExecutableBuildOptions* build_options,
+      std::shared_ptr<PyLocalClient> client,
+      const std::vector<std::vector<std::shared_ptr<Device>>>&
+          device_assignment);
+
+  // TODO(phawkins): Deprecated. Delete once all callers have been updated to
+  // use the newer form.
   static StatusOr<std::unique_ptr<PyLocalExecutable>> Compile(
       const XlaComputation& computation,
       absl::optional<std::vector<Shape>> argument_layouts,
@@ -329,19 +275,40 @@ class PyLocalExecutable {
       std::shared_ptr<PyLocalClient> client,
       absl::optional<DeviceAssignment> device_assignment);
 
-  PyLocalExecutable(std::shared_ptr<LocalExecutable> executable,
+  PyLocalExecutable(std::vector<std::unique_ptr<LocalExecutable>> executables,
                     DeviceAssignment device_assignment,
                     std::shared_ptr<PyLocalClient> client);
 
   int num_replicas() const {
-    return executable_->build_options().num_replicas();
+    return executables_[0]->build_options().num_replicas();
   }
 
-  // Returns the device ordinals to which each replica is assigned.
-  std::vector<int> DeviceOrdinals() const;
+  int num_partitions() const {
+    return executables_[0]->build_options().num_partitions();
+  }
+
+  int64 SizeOfGeneratedCodeInBytes() const {
+    int64 size = 0;
+    for (auto& executable : executables_) {
+      size += executable->executable()->SizeOfGeneratedCodeInBytes();
+    }
+    return size;
+  }
+
+  const std::vector<std::shared_ptr<LocalExecutable>>& executables() const {
+    return executables_;
+  }
 
   const DeviceAssignment& device_assignment() const {
-    return device_assignment_;
+    return *device_assignment_;
+  }
+
+  const std::vector<std::pair<int, int>>& local_logical_device_ids() const {
+    return local_logical_device_ids_;
+  }
+
+  const std::vector<std::shared_ptr<Device>>& local_devices() const {
+    return local_devices_;
   }
 
   StatusOr<std::unique_ptr<PyLocalBuffer>> Execute(
@@ -350,19 +317,48 @@ class PyLocalExecutable {
   // Execute on many replicas. Takes a sequence of argument lists (one argument
   // list per replica) and returns a tuple of results (one result per replica).
   // The number of argument lists must be equal to the replica count.
+  // The executable must have only one partition.
+  // TODO(cjfj): Remove this once JAX is moved to `ExecuteOnLocalDevices`.
   StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> ExecutePerReplica(
       absl::Span<const std::vector<PyLocalBuffer*>> argument_handles);
 
-  void Delete() { executable_ = nullptr; }
+  // Execute on local devices. Takes a sequence of argument lists (one argument
+  // list per local device) and returns a tuple of results (one result per local
+  // device). The number of argument lists must be equal to the local device
+  // count.
+  StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> ExecuteOnLocalDevices(
+      absl::Span<const std::vector<PyLocalBuffer*>> argument_handles);
+
+  void Delete() { executables_.clear(); }
+
+  const string& name() const;
 
  private:
   StatusOr<std::unique_ptr<PyLocalBuffer>> ExecuteHelper(
       absl::Span<PyLocalBuffer* const> argument_handles, int replica,
-      const RunId& run_id);
+      int partition, const RunId& run_id);
 
+  // Create shared pointers so we can free them after the execution: with
+  // asynchronous execution, the process being executed can outlive the
+  // executable itself.
   std::shared_ptr<PyLocalClient> const client_;
-  std::shared_ptr<LocalExecutable> executable_;
-  const DeviceAssignment device_assignment_;
+  // One executable per partition.
+  std::vector<std::shared_ptr<LocalExecutable>> executables_;
+  std::shared_ptr<DeviceAssignment> device_assignment_;
+
+  // The replica and partition indices of device_assignment_ to be run by this
+  // client. On single-host platforms without partitioning, this is all replicas
+  // (i.e. local_logical_device_ids_[i] = (i, 0)), but this may not be the case
+  // on multi-host platforms.
+  // If there are 4 replicas and 2 partitions on a single host platform, size of
+  // local_logical_device_ids_ is 4*2 = 8.
+  std::vector<std::pair<int, int>> local_logical_device_ids_;
+
+  // local_devices_[i] is the Device to which local_logical_device_ids_[i] is
+  // assigned.
+  // shared_ptrs instead of unique_ptrs to play well with the Python bindings
+  // (see xla.cc).
+  std::vector<std::shared_ptr<Device>> local_devices_;
 };
 
 }  // namespace xla

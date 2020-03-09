@@ -19,6 +19,7 @@ limitations under the License.
 #include <list>
 #include <memory>
 #include <numeric>
+#include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
@@ -31,11 +32,13 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
 #include "tensorflow/compiler/xla/service/hlo_reachability.h"
+#include "tensorflow/compiler/xla/service/pattern_matcher.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/platform/logging.h"
 
 namespace xla {
 namespace {
+
 // These nodes can always be duplicated into consumers, even if
 // InstructionFusion::may_duplicate_ is false.
 //
@@ -56,6 +59,8 @@ bool IsAlwaysDuplicable(const HloInstruction& instruction) {
 
 /*static*/ bool InstructionFusion::IsExpensive(
     const HloInstruction& instruction) {
+  namespace m = match;
+
   switch (instruction.opcode()) {
     // Cheap instructions.
     case HloOpcode::kAdd:
@@ -117,6 +122,17 @@ bool IsAlwaysDuplicable(const HloInstruction& instruction) {
     case HloOpcode::kSin:
       return ShapeUtil::ElementIsComplex(instruction.shape());
 
+    // We say that integer div/mod by a constant is cheap because it gets
+    // compiled down to multiplies and shifts, and we consider those to be
+    // cheap.
+    case HloOpcode::kDivide:
+    case HloOpcode::kRemainder:
+      return !ShapeUtil::ElementIsIntegral(instruction.shape()) ||
+             !Match(instruction.operand(1),
+                    m::AnyOf<const HloInstruction>(
+                        m::ConstantEffectiveScalar(),
+                        m::Broadcast(m::ConstantEffectiveScalar())));
+
     // Expensive instructions or unusual instructions for which fusion is
     // nonsensical.
     case HloOpcode::kAddDependency:
@@ -133,7 +149,6 @@ bool IsAlwaysDuplicable(const HloInstruction& instruction) {
     case HloOpcode::kAllToAll:
     case HloOpcode::kCollectivePermute:
     case HloOpcode::kCustomCall:
-    case HloOpcode::kDivide:
     case HloOpcode::kDomain:
     case HloOpcode::kDot:
     case HloOpcode::kExp:
@@ -150,9 +165,9 @@ bool IsAlwaysDuplicable(const HloInstruction& instruction) {
     case HloOpcode::kRecvDone:
     case HloOpcode::kReduce:
     case HloOpcode::kReduceWindow:
-    case HloOpcode::kRemainder:
     case HloOpcode::kRng:
     case HloOpcode::kRngGetAndUpdateState:
+    case HloOpcode::kRngBitGenerator:
     case HloOpcode::kRsqrt:
     case HloOpcode::kScatter:
     case HloOpcode::kSelectAndScatter:
@@ -165,6 +180,7 @@ bool IsAlwaysDuplicable(const HloInstruction& instruction) {
     case HloOpcode::kTriangularSolve:
     case HloOpcode::kWhile:
     case HloOpcode::kGetDimensionSize:
+    case HloOpcode::kSetDimensionSize:
       return true;
   }
 
@@ -455,11 +471,15 @@ StatusOr<bool> InstructionFusion::Run(HloModule* module) {
   module_ = module;
   int64 fuse_count = 0;
   std::vector<std::vector<bool>>* fusion_config = nullptr;
+  HloModuleConfig module_config;
   if (config_collection_mode_ != FusionConfigCollection::kOff) {
-    fusion_config = module->mutable_fusion_config();
+    module_config = module->config();
+    fusion_config = module_config.mutable_fusion_config();
     fusion_config->clear();
   }
-  for (auto* computation : module->MakeNonfusionComputations()) {
+
+  // Use sorted computations because fusion configuration is order-sensitive.
+  for (auto* computation : module->MakeNonfusionComputationsSorted()) {
     CHECK(!computation->IsFusionComputation());
     computation_ = computation;
     reachability_ = HloReachabilityMap::Build(computation_);
@@ -553,7 +573,7 @@ StatusOr<bool> InstructionFusion::Run(HloModule* module) {
     if (config_collection_mode_ != FusionConfigCollection::kOff) {
       const std::vector<bool>* comp_fusion_config =
           fusion_queue->FusionConfiguration();
-      if (comp_fusion_config && comp_fusion_config->size() > 0) {
+      if (comp_fusion_config && !comp_fusion_config->empty()) {
         fusion_config->push_back(*comp_fusion_config);
       }
     }
@@ -571,6 +591,7 @@ StatusOr<bool> InstructionFusion::Run(HloModule* module) {
     VLOG(1) << "There are " << fused_count << " fused bits that cause "
             << fuse_count << " fusion actions.";
     VLOG(1) << FusionConfigToString(*fusion_config);
+    module->set_config(module_config);
   }
   VLOG(1) << "Fusion count: " << fuse_count;
 
@@ -594,12 +615,20 @@ HloInstruction* InstructionFusion::AddFusionInstruction(
   return fusion_instruction;
 }
 
+HloInstruction* InstructionFusion::FuseInstruction(
+    HloInstruction* fusion_instruction, HloInstruction* producer) {
+  return fusion_instruction->FuseInstruction(producer);
+}
+
 HloInstruction* InstructionFusion::Fuse(HloInstruction* producer,
                                         HloInstruction* consumer) {
   VLOG(2) << "Fusing " << producer->ToString() << " into "
           << consumer->ToString();
   HloInstruction* fusion_instruction = AddFusionInstruction(producer, consumer);
-  fusion_instruction->FuseInstruction(producer);
+  FuseInstruction(fusion_instruction, producer);
+  if (fusion_instruction != producer && fusion_instruction != consumer) {
+    VLOG(2) << "       created new fusion: " << fusion_instruction->ToString();
+  }
   return fusion_instruction;
 }
 
@@ -660,10 +689,6 @@ bool InstructionFusion::ShouldFuse(HloInstruction* consumer,
   if (FusionWouldDuplicate(*producer, *consumer) &&
       (!may_duplicate_ || is_expensive_(*producer)) &&
       !IsAlwaysDuplicable(*producer)) {
-    return false;
-  }
-
-  if (consumer->opcode() == HloOpcode::kFusion && consumer->IsCustomFusion()) {
     return false;
   }
 

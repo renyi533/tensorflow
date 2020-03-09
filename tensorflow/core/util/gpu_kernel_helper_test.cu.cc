@@ -41,25 +41,28 @@ namespace tensorflow {
 
 namespace {
 
-__global__ void SetOutbufZero(GpuLaunchConfig config, int* outbuf) {
-  CUDA_1D_KERNEL_LOOP(x, config.virtual_thread_count) { outbuf[x] = 0; }
+__global__ void SetOutbufZero(GpuLaunchConfig config,
+                              int* __restrict__ outbuf) {
+  GPU_1D_KERNEL_LOOP(x, config.virtual_thread_count) { outbuf[x] = 0; }
 }
 
 // counting number of jobs by using atomic +1
-__global__ void Count1D(GpuLaunchConfig config, int bufsize, int* outbuf) {
-  CUDA_1D_KERNEL_LOOP(x, config.virtual_thread_count) {
+__global__ void Count1D(GpuLaunchConfig config, int bufsize,
+                        int* __restrict__ outbuf) {
+  GPU_1D_KERNEL_LOOP(x, config.virtual_thread_count) {
     if (x < 0) {  // x might overflow when testing extreme case
       break;
     }
     atomicAdd(&outbuf[x % bufsize], 1);
   }
 }
-__global__ void Count2D(Gpu2DLaunchConfig config, int bufsize, int* outbuf) {
-  CUDA_AXIS_KERNEL_LOOP(x, config.virtual_thread_count.x, X) {
+__global__ void Count2D(Gpu2DLaunchConfig config, int bufsize,
+                        int* __restrict__ outbuf) {
+  GPU_AXIS_KERNEL_LOOP(x, config.virtual_thread_count.x, X) {
     if (x < 0) {  // x might overflow when testing extreme case
       break;
     }
-    CUDA_AXIS_KERNEL_LOOP(y, config.virtual_thread_count.y, Y) {
+    GPU_AXIS_KERNEL_LOOP(y, config.virtual_thread_count.y, Y) {
       if (y < 0) {  // y might overflow when testing extreme case
         break;
       }
@@ -68,16 +71,17 @@ __global__ void Count2D(Gpu2DLaunchConfig config, int bufsize, int* outbuf) {
     }
   }
 }
-__global__ void Count3D(Gpu3DLaunchConfig config, int bufsize, int* outbuf) {
-  CUDA_AXIS_KERNEL_LOOP(x, config.virtual_thread_count.x, X) {
+__global__ void Count3D(Gpu3DLaunchConfig config, int bufsize,
+                        int* __restrict__ outbuf) {
+  GPU_AXIS_KERNEL_LOOP(x, config.virtual_thread_count.x, X) {
     if (x < 0) {  // x might overflow when testing extreme case
       break;
     }
-    CUDA_AXIS_KERNEL_LOOP(y, config.virtual_thread_count.y, Y) {
+    GPU_AXIS_KERNEL_LOOP(y, config.virtual_thread_count.y, Y) {
       if (y < 0) {  // y might overflow when testing extreme case
         break;
       }
-      CUDA_AXIS_KERNEL_LOOP(z, config.virtual_thread_count.z, Z) {
+      GPU_AXIS_KERNEL_LOOP(z, config.virtual_thread_count.z, Z) {
         if (z < 0) {  // z might overflow when testing extreme case
           break;
         }
@@ -90,8 +94,9 @@ __global__ void Count3D(Gpu3DLaunchConfig config, int bufsize, int* outbuf) {
   }
 }
 
-__global__ void CudaShuffleGetSrcLaneTest(unsigned* failure_count) {
-  unsigned lane_id = CudaLaneId();
+__global__ void CudaShuffleGetSrcLaneTest(
+    unsigned* __restrict__ failure_count) {
+  unsigned lane_id = GpuLaneId();
   for (int width = warpSize; width > 1; width /= 2) {
     auto check_result = [&](const char* op_name, int param, unsigned actual,
                             unsigned expected) {
@@ -155,24 +160,24 @@ TEST_F(GpuLaunchConfigTest, GetGpuLaunchConfig) {
 // test valid inputs
 #define TEST_LAUNCH_PARAMETER(work_element_count)                              \
   cfg = GetGpuLaunchConfig(bufsize, d);                                        \
-  TF_CHECK_OK(CudaLaunchKernel(SetOutbufZero, cfg.block_count,                 \
-                               cfg.thread_per_block, 0, d.stream(), cfg,       \
-                               outbuf));                                       \
+  TF_CHECK_OK(GpuLaunchKernel(SetOutbufZero, cfg.block_count,                  \
+                              cfg.thread_per_block, 0, d.stream(), cfg,        \
+                              outbuf));                                        \
   CUDA_ASSERT_SUCCESS                                                          \
   cfg = GetGpuLaunchConfig(work_element_count, d);                             \
-  TF_CHECK_OK(CudaLaunchKernel(Count1D, cfg.block_count, cfg.thread_per_block, \
-                               0, d.stream(), cfg, bufsize, outbuf));          \
+  TF_CHECK_OK(GpuLaunchKernel(Count1D, cfg.block_count, cfg.thread_per_block,  \
+                              0, d.stream(), cfg, bufsize, outbuf));           \
   CUDA_EXPECT_SUCCESS                                                          \
   EXPECT_EQ(work_element_count, std::accumulate(outbuf, outbuf + bufsize, 0)); \
                                                                                \
   cfg = GetGpuLaunchConfig(bufsize, d, SetOutbufZero, 0, 0);                   \
-  TF_CHECK_OK(CudaLaunchKernel(SetOutbufZero, cfg.block_count,                 \
-                               cfg.thread_per_block, 0, d.stream(), cfg,       \
-                               outbuf));                                       \
+  TF_CHECK_OK(GpuLaunchKernel(SetOutbufZero, cfg.block_count,                  \
+                              cfg.thread_per_block, 0, d.stream(), cfg,        \
+                              outbuf));                                        \
   CUDA_ASSERT_SUCCESS                                                          \
   cfg = GetGpuLaunchConfig(work_element_count, d, Count1D, 0, 0);              \
-  TF_CHECK_OK(CudaLaunchKernel(Count1D, cfg.block_count, cfg.thread_per_block, \
-                               0, d.stream(), cfg, bufsize, outbuf));          \
+  TF_CHECK_OK(GpuLaunchKernel(Count1D, cfg.block_count, cfg.thread_per_block,  \
+                              0, d.stream(), cfg, bufsize, outbuf));           \
   CUDA_EXPECT_SUCCESS                                                          \
   EXPECT_EQ(work_element_count, std::accumulate(outbuf, outbuf + bufsize, 0))
 
@@ -189,7 +194,7 @@ TEST_F(GpuLaunchConfigTest, GetGpuLaunchConfig) {
 #undef TEST_LAUNCH_PARAMETER
 }
 
-bool operator==(const Gpu2DLaunchConfig& a, const Cuda2DLaunchConfig& b) {
+bool operator==(const Gpu2DLaunchConfig& a, const Gpu2DLaunchConfig& b) {
   return a.thread_per_block.x == b.thread_per_block.x &&
          a.thread_per_block.y == b.thread_per_block.y &&
          a.thread_per_block.z == b.thread_per_block.z &&
@@ -206,29 +211,27 @@ TEST_F(GpuLaunchConfigTest, GetGpu2DLaunchConfig) {
   GpuLaunchConfig cfg1d;
 
 // test valid inputs
-#define TEST_LAUNCH_PARAMETER(dimx, dimy)                                     \
-  cfg1d = GetGpuLaunchConfig(bufsize, d);                                     \
-  TF_EXPECT_OK(CudaLaunchKernel(SetOutbufZero, cfg1d.block_count,             \
-                                cfg1d.thread_per_block, 0, d.stream(), cfg1d, \
-                                outbuf));                                     \
-  CUDA_ASSERT_SUCCESS                                                         \
-  cfg = GetGpu2DLaunchConfig(dimx, dimy, d);                                  \
-  TF_EXPECT_OK(CudaLaunchKernel(Count2D, cfg.block_count,                     \
-                                cfg.thread_per_block, 0, d.stream(), cfg,     \
-                                bufsize, outbuf));                            \
-  CUDA_EXPECT_SUCCESS                                                         \
-  EXPECT_EQ(dimx* dimy, std::accumulate(outbuf, outbuf + bufsize, 0));        \
-                                                                              \
-  cfg1d = GetGpuLaunchConfig(bufsize, d, SetOutbufZero, 0, 0);                \
-  TF_EXPECT_OK(CudaLaunchKernel(SetOutbufZero, cfg1d.block_count,             \
-                                cfg1d.thread_per_block, 0, d.stream(), cfg1d, \
-                                outbuf));                                     \
-  CUDA_ASSERT_SUCCESS                                                         \
-  cfg = GetGpu2DLaunchConfig(dimx, dimy, d, Count2D, 0, 0);                   \
-  TF_EXPECT_OK(CudaLaunchKernel(Count2D, cfg.block_count,                     \
-                                cfg.thread_per_block, 0, d.stream(), cfg,     \
-                                bufsize, outbuf));                            \
-  CUDA_EXPECT_SUCCESS                                                         \
+#define TEST_LAUNCH_PARAMETER(dimx, dimy)                                      \
+  cfg1d = GetGpuLaunchConfig(bufsize, d);                                      \
+  TF_EXPECT_OK(GpuLaunchKernel(SetOutbufZero, cfg1d.block_count,               \
+                               cfg1d.thread_per_block, 0, d.stream(), cfg1d,   \
+                               outbuf));                                       \
+  CUDA_ASSERT_SUCCESS                                                          \
+  cfg = GetGpu2DLaunchConfig(dimx, dimy, d);                                   \
+  TF_EXPECT_OK(GpuLaunchKernel(Count2D, cfg.block_count, cfg.thread_per_block, \
+                               0, d.stream(), cfg, bufsize, outbuf));          \
+  CUDA_EXPECT_SUCCESS                                                          \
+  EXPECT_EQ(dimx* dimy, std::accumulate(outbuf, outbuf + bufsize, 0));         \
+                                                                               \
+  cfg1d = GetGpuLaunchConfig(bufsize, d, SetOutbufZero, 0, 0);                 \
+  TF_EXPECT_OK(GpuLaunchKernel(SetOutbufZero, cfg1d.block_count,               \
+                               cfg1d.thread_per_block, 0, d.stream(), cfg1d,   \
+                               outbuf));                                       \
+  CUDA_ASSERT_SUCCESS                                                          \
+  cfg = GetGpu2DLaunchConfig(dimx, dimy, d, Count2D, 0, 0);                    \
+  TF_EXPECT_OK(GpuLaunchKernel(Count2D, cfg.block_count, cfg.thread_per_block, \
+                               0, d.stream(), cfg, bufsize, outbuf));          \
+  CUDA_EXPECT_SUCCESS                                                          \
   EXPECT_EQ(dimx* dimy, std::accumulate(outbuf, outbuf + bufsize, 0))
 
   TEST_LAUNCH_PARAMETER(128, 128);
@@ -250,17 +253,16 @@ TEST_F(GpuLaunchConfigTest, GetGpu3DLaunchConfig) {
   GpuLaunchConfig cfg1d;
 
 // test valid inputs
-#define TEST_LAUNCH_PARAMETER(dimx, dimy, dimz)                               \
-  cfg1d = GetGpuLaunchConfig(bufsize, d, SetOutbufZero, 0, 0);                \
-  TF_EXPECT_OK(CudaLaunchKernel(SetOutbufZero, cfg1d.block_count,             \
-                                cfg1d.thread_per_block, 0, d.stream(), cfg1d, \
-                                outbuf));                                     \
-  CUDA_ASSERT_SUCCESS                                                         \
-  cfg = GetGpu3DLaunchConfig(dimx, dimy, dimz, d, Count3D, 0, 0);             \
-  TF_EXPECT_OK(CudaLaunchKernel(Count3D, cfg.block_count,                     \
-                                cfg.thread_per_block, 0, d.stream(), cfg,     \
-                                bufsize, outbuf));                            \
-  CUDA_EXPECT_SUCCESS                                                         \
+#define TEST_LAUNCH_PARAMETER(dimx, dimy, dimz)                                \
+  cfg1d = GetGpuLaunchConfig(bufsize, d, SetOutbufZero, 0, 0);                 \
+  TF_EXPECT_OK(GpuLaunchKernel(SetOutbufZero, cfg1d.block_count,               \
+                               cfg1d.thread_per_block, 0, d.stream(), cfg1d,   \
+                               outbuf));                                       \
+  CUDA_ASSERT_SUCCESS                                                          \
+  cfg = GetGpu3DLaunchConfig(dimx, dimy, dimz, d, Count3D, 0, 0);              \
+  TF_EXPECT_OK(GpuLaunchKernel(Count3D, cfg.block_count, cfg.thread_per_block, \
+                               0, d.stream(), cfg, bufsize, outbuf));          \
+  CUDA_EXPECT_SUCCESS                                                          \
   EXPECT_EQ(dimx* dimy* dimz, std::accumulate(outbuf, outbuf + bufsize, 0))
 
   TEST_LAUNCH_PARAMETER(128, 128, 128);
@@ -282,8 +284,8 @@ TEST(CudaDeviceFunctionsTest, ShuffleGetSrcLane) {
   unsigned* failure_count;
   ASSERT_EQ(cudaMallocManaged(&failure_count, sizeof(unsigned)), cudaSuccess);
   *failure_count = 0;
-  TF_EXPECT_OK(CudaLaunchKernel(CudaShuffleGetSrcLaneTest, 1, 32, 0, nullptr,
-                                failure_count));
+  TF_EXPECT_OK(GpuLaunchKernel(CudaShuffleGetSrcLaneTest, 1, 32, 0, nullptr,
+                               failure_count));
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   ASSERT_EQ(*failure_count, 0);
   cudaFree(failure_count);

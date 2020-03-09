@@ -16,9 +16,11 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/instruction_fusion.h"
 
 #include "absl/container/flat_hash_set.h"
+#include "tensorflow/compiler/xla/service/fusion_node_indexing_evaluation.h"
 #include "tensorflow/compiler/xla/service/gpu/gpu_fusible.h"
 #include "tensorflow/compiler/xla/service/gpu/ir_emission_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
+#include "tensorflow/compiler/xla/service/hlo_query.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/fused_ir_emitter.h"
 #include "tensorflow/compiler/xla/service/pattern_matcher.h"
 #include "tensorflow/compiler/xla/shape_util.h"
@@ -27,30 +29,14 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-namespace {
-
-bool IsIEEEFloatingPointScalarConstant(const HloInstruction* constant) {
-  if (constant->opcode() != HloOpcode::kConstant ||
-      !ShapeUtil::IsScalar(constant->shape())) {
-    return false;
-  }
-  auto type = constant->shape().element_type();
-  return type == F16 || type == F32 || type == F64;
-}
-
-}  // namespace
-
 /*static*/ bool GpuInstructionFusion::IsExpensive(
     const HloInstruction& instruction) {
-  switch (instruction.opcode()) {
-    // We say that floating-point division is cheap on the GPU.
-    case HloOpcode::kDivide:
-      return !ShapeUtil::ElementIsFloating(instruction.shape()) &&
-             InstructionFusion::IsExpensive(instruction);
-
-    default:
-      return InstructionFusion::IsExpensive(instruction);
+  // We say that floating-point division is cheap on the GPU.
+  if (instruction.opcode() == HloOpcode::kDivide &&
+      ShapeUtil::ElementIsFloating(instruction.shape())) {
+    return false;
   }
+  return InstructionFusion::IsExpensive(instruction);
 }
 
 bool GpuInstructionFusion::ShouldFuseInexpensiveChecks(HloInstruction* consumer,
@@ -87,11 +73,23 @@ bool GpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
   if (FusionWouldBeTooLarge(*consumer, *producer)) {
     return false;
   }
+  if (consumer->opcode() != HloOpcode::kFusion) {
+    return true;
+  }
   // Also check that our emitter can handle the fusion node. We currently can
   // have exponential time/memory requirements for emitting certain fusion
   // kernels, in which case we don't want to fuse.
   // TODO(b/119692968): Remove this once we have fixed our fusion emitter.
-  return !FusedIrEmitter::IsFusedIrEmitterInefficient(consumer, producer);
+  if (fusion_node_evaluations_.find(consumer) ==
+      fusion_node_evaluations_.end()) {
+    // We have no cached results for this fusion node yet. This can happen when
+    // we run the InstructionFusion pass more than once. We can only cache the
+    // results within one run.
+    fusion_node_evaluations_.emplace(consumer,
+                                     FusionNodeIndexingEvaluation(consumer));
+  }
+  return !fusion_node_evaluations_.at(consumer).AverageCodeDuplicationTooHigh(
+      producer);
 }
 
 bool GpuInstructionFusion::ShouldFuseIntoMultiOutput(HloInstruction* consumer,
@@ -102,6 +100,22 @@ bool GpuInstructionFusion::ShouldFuseIntoMultiOutput(HloInstruction* consumer,
 HloInstruction::FusionKind GpuInstructionFusion::ChooseKind(
     const HloInstruction* producer, const HloInstruction* consumer) {
   return ChooseFusionKind(*producer, *consumer);
+}
+
+HloInstruction* GpuInstructionFusion::FuseInstruction(
+    HloInstruction* fusion_instruction, HloInstruction* producer) {
+  auto evaluation = fusion_node_evaluations_.find(fusion_instruction);
+  if (evaluation == fusion_node_evaluations_.end()) {
+    evaluation = fusion_node_evaluations_
+                     .emplace(fusion_instruction,
+                              FusionNodeIndexingEvaluation(fusion_instruction))
+                     .first;
+  }
+  auto indexing_users = evaluation->second.RemoveFusionOperand(producer);
+  HloInstruction* new_producer =
+      InstructionFusion::FuseInstruction(fusion_instruction, producer);
+  evaluation->second.UpdateEvaluationCache(new_producer, indexing_users);
+  return new_producer;
 }
 
 }  // namespace gpu

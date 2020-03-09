@@ -272,7 +272,7 @@ class Call : public UntypedCall<Service> {
   Tag cancelled_tag_{this, Tag::kCancelled};
 
   mutex mu_;
-  std::function<void()> cancel_callback_ GUARDED_BY(mu_);
+  std::function<void()> cancel_callback_ TF_GUARDED_BY(mu_);
 };
 
 // Lifetime of a server-side bidirectional streaming call:
@@ -425,7 +425,13 @@ class ServerBidirectionalStreamingCall
         stream_(&ctx_),
         grpc_service_(grpc_service),
         cq_(cq),
-        enqueue_function_(enqueue_function) {}
+        enqueue_function_(enqueue_function) {
+    VLOG(3) << "Creating ServerBidirectionalStreamingCall " << this;
+  }
+
+  ~ServerBidirectionalStreamingCall() override {
+    VLOG(3) << "Destroying ServerBidirectionalStreamingCall " << this;
+  }
 
   void CallOpen() override {
     // Let gRPC know that we can accept another call.

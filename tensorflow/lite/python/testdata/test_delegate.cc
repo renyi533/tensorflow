@@ -16,7 +16,7 @@ limitations under the License.
 #include <cstdlib>
 #include <cstring>
 
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
 
 namespace tflite {
 
@@ -26,13 +26,16 @@ int num_delegates_created = 0;
 int num_delegates_destroyed = 0;
 int num_delegates_invoked = 0;
 int options_counter = 0;
+int (*destruction_callback)(const char* s) = nullptr;
+typedef void (*ErrorHandler)(const char*);
 
 }  // namespace
 
 extern "C" {
 TfLiteDelegate* tflite_plugin_create_delegate(char** options_keys,
                                               char** options_values,
-                                              size_t num_options) {
+                                              size_t num_options,
+                                              ErrorHandler error_handler) {
   num_delegates_created++;
 
   for (int idx = 0; idx < num_options; idx++) {
@@ -42,6 +45,7 @@ TfLiteDelegate* tflite_plugin_create_delegate(char** options_keys,
         options_counter += int_value;
       }
     } else if (std::strcmp("fail", options_keys[idx]) == 0) {
+      if (error_handler) error_handler("Fail argument sent.");
       return nullptr;
     }
   }
@@ -55,9 +59,19 @@ TfLiteDelegate* tflite_plugin_create_delegate(char** options_keys,
   return ptr;
 }
 
+void set_destroy_callback(int (*callback)(const char* s)) {
+  destruction_callback = callback;
+}
+
 void tflite_plugin_destroy_delegate(TfLiteDelegate* delegate) {
   num_delegates_destroyed++;
   delete delegate;
+  if (destruction_callback) {
+    destruction_callback("test_delegate");
+    // destruction_callback is a global variable,
+    // so it should be set to nullptr here to avoid crashes
+    destruction_callback = nullptr;
+  }
 }
 
 void initialize_counters() {

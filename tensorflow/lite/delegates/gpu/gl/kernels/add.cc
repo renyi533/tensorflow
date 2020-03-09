@@ -47,14 +47,16 @@ class Add : public NodeShader {
           inputs[0]->tensor.shape != inputs[1]->tensor.shape &&
           inputs[1]->tensor.shape.h == 1 && inputs[1]->tensor.shape.w == 1 &&
           inputs[0]->tensor.shape.c == inputs[1]->tensor.shape.c) {
+        // TODO(b/147771327): investigate why input_data_1[gid.z] worked before
         *generated_code = {
             /*parameters=*/{},
             /*objects=*/{},
+            /*shared_variables=*/{},
             /*workload=*/uint3(),
             /*workgroup=*/uint3(),
             /*source_code=*/
-            "value_0 = $input_data_1[gid.z]$ + $input_data_0[gid.x, gid.y, "
-            "gid.z]$;",
+            "value_0 = $input_data_0[gid.x, gid.y, gid.z]$ + "
+            "          $input_data_1[0, 0, gid.z]$;",
             /*input=*/IOStructure::ONLY_DEFINITIONS,
             /*output=*/IOStructure::AUTO,
         };
@@ -72,6 +74,7 @@ class Add : public NodeShader {
       *generated_code = {
           /*parameters=*/{},
           /*objects=*/{},
+          /*shared_variables=*/{},
           /*workload=*/uint3(),
           /*workgroup=*/uint3(),
           /*source_code=*/std::move(code),
@@ -85,6 +88,7 @@ class Add : public NodeShader {
       *generated_code = {
           /*parameters=*/{{"scalar", *scalar}},
           /*objects=*/{},
+          /*shared_variables=*/{},
           /*workload=*/uint3(),
           /*workgroup=*/uint3(),
           /*source_code=*/"value_0 += $scalar$;",
@@ -96,6 +100,7 @@ class Add : public NodeShader {
       *generated_code = {
           /*parameters=*/{},
           /*objects=*/{{"add_buffer", MakeReadonlyObject(adds->data)}},
+          /*shared_variables=*/{},
           // Declare workload explicitly because shader depends on gid.z.
           /*workload=*/
           uint3(shape.w, shape.h, IntegralDivideRoundUp(shape.c, 4)),

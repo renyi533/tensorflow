@@ -17,9 +17,11 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_XLA_PYTHON_SHARED_DEVICE_BUFFER_H_
 
 #include "absl/container/flat_hash_set.h"
+#include "tensorflow/compiler/xla/python/event_pool.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/service/transfer_manager.h"
 #include "tensorflow/compiler/xla/shape.h"
+#include "tensorflow/stream_executor/device_memory.h"
 #include "tensorflow/stream_executor/device_memory_allocator.h"
 
 namespace xla {
@@ -50,31 +52,32 @@ namespace xla {
 // same stream causes no additional waiting.
 class BufferDefinitionEvent {
  public:
-  // Creates a new definition event whose event has not yet been triggered.
-  static StatusOr<std::shared_ptr<BufferDefinitionEvent>> Create(
-      se::StreamExecutor* executor);
+  BufferDefinitionEvent() = default;
 
-  explicit BufferDefinitionEvent(se::StreamExecutor* executor);
-
-  // Records the definition event on the tail of 'stream'.
-  void RecordOnStream(se::Stream* stream);
+  // Sets the definition event of the buffer to 'event', which is recorded
+  // on 'stream'. Must be called at most once. Unblocks any other host threads
+  // are blocked in WaitForEventOnStream.
+  void SetDefinitionEvent(EventPool::Handle event, se::Stream* stream);
 
   // Adds synchronization events to 'stream' that wait for this event to be
   // defined on 'stream'. Does nothing if the event is already known to have
-  // occurred by the tail of 'stream'.
+  // occurred by the tail of 'stream'. If RecordOnStream has not yet been
+  // called, blocks the calling thread until the event has been recorded.
   void WaitForEventOnStream(se::Stream* stream);
 
  private:
+  bool EventHasBeenRecorded() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
+
   // An event that is triggered when the content of one or more buffers is
   // ready. If this event is nullptr, it is assumed that the buffer's content is
   // always defined.
-  se::Event event_;
+  EventPool::Handle event_;
 
   absl::Mutex mu_;
 
   // A list of all streams for which the buffer's content is known to be defined
   // at the tail of the queue, i.e., for any newly enqueued command.
-  absl::InlinedVector<se::Stream*, 2> streams_defined_on_ GUARDED_BY(mu_);
+  absl::InlinedVector<se::Stream*, 2> streams_defined_on_ TF_GUARDED_BY(mu_);
 };
 
 // Class that represents a node in a reference-counted DAG of device buffers.
@@ -87,16 +90,16 @@ class BufferDefinitionEvent {
 class SharedDeviceBuffer {
  public:
   // Converts a ScopedShapedBuffer into a Buffer tree. Takes ownership of the
-  // contents of the shaped_buffer.
+  // buffers of the shaped_buffer.
   static std::shared_ptr<SharedDeviceBuffer> FromScopedShapedBuffer(
-      ScopedShapedBuffer shaped_buffer,
+      ScopedShapedBuffer* shaped_buffer,
       const std::shared_ptr<BufferDefinitionEvent>& definition_event);
 
   // Makes a tuple buffer. Does not initialize the tuple table.
   static StatusOr<std::shared_ptr<SharedDeviceBuffer>> MakeTuple(
       std::vector<std::shared_ptr<SharedDeviceBuffer>> children,
-      TransferManager* transfer_manager, se::DeviceMemoryAllocator* allocator,
-      int device_ordinal,
+      const Shape& on_host_shape, TransferManager* transfer_manager,
+      se::DeviceMemoryAllocator* allocator, int device_ordinal,
       std::shared_ptr<BufferDefinitionEvent> definition_event);
 
   // Makes an uninitialized array buffer.
@@ -105,34 +108,47 @@ class SharedDeviceBuffer {
       se::DeviceMemoryAllocator* allocator, int device_ordinal,
       std::shared_ptr<BufferDefinitionEvent> definition_event);
 
-  // Builds a ShapedBuffer view onto the buffers of 'tree'. Since
-  // SharedDeviceBuffer does not maintain the on-host shape, the caller must
-  // provide it. We require but do not verify that
-  // TransferManager::HostShapeToDeviceShape(on_host_shape) == on_device_shape()
-  ShapedBuffer AsShapedBuffer(const Shape& on_host_shape) const;
+  // Builds a ShapedBuffer view onto the buffers of 'tree'. We require but do
+  // not verify that TransferManager::HostShapeToDeviceShape(on_host_shape) ==
+  // on_device_shape().
+  ShapedBuffer AsShapedBuffer(const Shape& on_host_shape,
+                              const Shape& on_device_shape,
+                              se::Platform* platform) const;
 
-  const Shape& on_device_shape() const { return on_device_shape_; }
   const std::vector<std::shared_ptr<SharedDeviceBuffer>>& children() const {
     return children_;
   }
-  const se::OwningDeviceMemory& device_memory() const { return device_memory_; }
-  int device_ordinal() const { return device_memory_.device_ordinal(); }
+  se::DeviceMemoryAllocator* allocator() const { return allocator_; }
+  int device_ordinal() const { return device_ordinal_; }
+  absl::InlinedVector<se::DeviceMemoryBase, 1>& device_memory() {
+    return device_memory_;
+  }
+  const absl::InlinedVector<se::DeviceMemoryBase, 1>& device_memory() const {
+    return device_memory_;
+  }
   const std::shared_ptr<BufferDefinitionEvent> definition_event() const {
     return definition_event_;
   }
 
   SharedDeviceBuffer() = default;
-  SharedDeviceBuffer(Shape on_device_shape,
-                     se::OwningDeviceMemory device_memory,
+  SharedDeviceBuffer(se::DeviceMemoryAllocator* allocator, int device_ordinal,
+                     absl::Span<se::DeviceMemoryBase const> device_memory,
+                     std::vector<std::shared_ptr<SharedDeviceBuffer>> children,
+                     std::shared_ptr<BufferDefinitionEvent> definition_event,
+                     std::function<void()> on_delete_callback);
+  SharedDeviceBuffer(absl::Span<se::OwningDeviceMemory> device_memory,
                      std::vector<std::shared_ptr<SharedDeviceBuffer>> children,
                      std::shared_ptr<BufferDefinitionEvent> definition_event);
+  ~SharedDeviceBuffer();
 
  private:
-  // We only represent the on-device shape. The on-host shape may not be
-  // one-to-one with the tree of device buffers, so to avoid representational
-  // awkwardness we maintain on-host shapes separately.
-  Shape on_device_shape_;
-  se::OwningDeviceMemory device_memory_;
+  // Are the buffers in device_memory_ owned? If so, which allocator and device
+  // ordinal? May be nullptr, indicating the buffers are not owned.
+  se::DeviceMemoryAllocator* allocator_;
+  int device_ordinal_;
+
+  // Each host-side buffer may have several buffers on-device.
+  absl::InlinedVector<se::DeviceMemoryBase, 1> device_memory_;
   std::vector<std::shared_ptr<SharedDeviceBuffer>> children_;
 
   // An event that is triggered when the content of one or more buffers is
@@ -140,6 +156,9 @@ class SharedDeviceBuffer {
   // single-stream execution case where events are not necessary for buffer
   // event sequencing.
   std::shared_ptr<BufferDefinitionEvent> definition_event_;
+
+  // A callback to call when the SharedDeviceBuffer is about to be destroyed.
+  std::function<void()> on_delete_callback_;
 };
 
 // Populates 'events' with the set of buffer definition events for all buffers

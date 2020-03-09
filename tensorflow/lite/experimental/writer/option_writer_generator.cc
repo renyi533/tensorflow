@@ -40,6 +40,7 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteFakeQuantParams",
                                       "TfLiteFullyConnectedParams",
                                       "TfLiteGatherParams",
+                                      "TfLiteIfParams",
                                       "TfLiteL2NormParams",
                                       "TfLiteLeakyReluParams",
                                       "TfLiteLocalResponseNormParams",
@@ -63,6 +64,7 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteSoftmaxParams",
                                       "TfLiteSpaceToBatchNDParams",
                                       "TfLiteSpaceToDepthParams",
+                                      "TfLiteDepthToSpaceParams",
                                       "TfLiteSparseToDenseParams",
                                       "TfLiteSplitParams",
                                       "TfLiteSplitVParams",
@@ -76,6 +78,7 @@ static const char* param_structs[] = {"TfLiteAddParams",
                                       "TfLiteUniqueParams",
                                       "TfLiteUnpackParams",
                                       "TfLiteReverseSequenceParams",
+                                      "TfLiteWhileParams",
                                       nullptr};
 }  // namespace
 
@@ -255,7 +258,7 @@ void GenerateImportForResizeBilinearOp(FILE* fp) {
           "    const auto* params = reinterpret_cast<const "
           "TfLiteResizeBilinearParams*>(builtin_op_data);\n"
           "    auto union_type = CreateResizeBilinearOptions(*fbb, "
-          "params->align_corners).Union();\n"
+          "params->align_corners, params->half_pixel_centers).Union();\n"
           "    return std::make_pair(BuiltinOptions_ResizeBilinearOptions, "
           "union_type);\n"
           "  }\n  break;\n");

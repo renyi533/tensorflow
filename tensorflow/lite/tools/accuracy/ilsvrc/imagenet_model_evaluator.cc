@@ -15,8 +15,6 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/accuracy/ilsvrc/imagenet_model_evaluator.h"
 
-#include <dirent.h>
-
 #include <fstream>
 #include <iomanip>
 #include <mutex>  // NOLINT(build/c++11)
@@ -26,7 +24,7 @@ limitations under the License.
 
 #include "absl/memory/memory.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/tools/accuracy/ilsvrc/default/custom_delegates.h"
 #include "tensorflow/lite/tools/command_line_flags.h"
 #include "tensorflow/lite/tools/evaluation/proto/evaluation_config.pb.h"
@@ -49,6 +47,7 @@ constexpr char kInterpreterThreadsFlag[] = "num_interpreter_threads";
 constexpr char kDelegateFlag[] = "delegate";
 constexpr char kNnapiDelegate[] = "nnapi";
 constexpr char kGpuDelegate[] = "gpu";
+constexpr char kNumRanksFlag[] = "num_ranks";
 
 template <typename T>
 std::vector<T> GetFirstN(const std::vector<T>& v, int n) {
@@ -107,7 +106,7 @@ class CompositeObserver : public ImagenetModelEvaluator::Observer {
 };
 
 /*static*/ TfLiteStatus ImagenetModelEvaluator::Create(
-    int argc, char* argv[], int num_threads,
+    int* argc, char* argv[], int num_threads,
     std::unique_ptr<ImagenetModelEvaluator>* model_evaluator) {
   Params params;
   params.number_of_images = 100;
@@ -144,8 +143,11 @@ class CompositeObserver : public ImagenetModelEvaluator::Observer {
       tflite::Flag::CreateFlag(kDelegateFlag, &params.delegate,
                                "Delegate to use for inference, if available. "
                                "Must be one of {'nnapi', 'gpu'}"),
+      tflite::Flag::CreateFlag(kNumRanksFlag, &params.num_ranks,
+                               "Generates the top-1 to top-k accuracy values"
+                               "where k = num_ranks. Default: 10"),
   };
-  tflite::Flags::Parse(&argc, const_cast<const char**>(argv), flag_list);
+  tflite::Flags::Parse(argc, const_cast<const char**>(argv), flag_list);
 
   if (params.number_of_images < 0) {
     LOG(ERROR) << "Invalid: num_examples";
@@ -208,8 +210,12 @@ TfLiteStatus ImagenetModelEvaluator::EvaluateModel() const {
       tflite::evaluation::GetSortedFileNames(data_path, &image_files));
   std::vector<string> ground_truth_image_labels;
   if (!tflite::evaluation::ReadFileLines(params_.ground_truth_labels_path,
-                                         &ground_truth_image_labels))
+                                         &ground_truth_image_labels)) {
+    LOG(ERROR) << "Unable to read ground truth labels from: "
+               << params_.ground_truth_labels_path
+               << " Perhaps file doesn't exist or is unreadable.";
     return kTfLiteError;
+  }
   if (image_files.size() != ground_truth_image_labels.size()) {
     LOG(ERROR) << "Images and ground truth labels don't match";
     return kTfLiteError;
@@ -259,7 +265,7 @@ TfLiteStatus ImagenetModelEvaluator::EvaluateModel() const {
                  &all_okay]() {
       if (EvaluateModelForShard(shard_id, image_label, model_labels, params_,
                                 &observer, params_.num_ranks) != kTfLiteOk) {
-        all_okay = all_okay && false;
+        all_okay = false;
       }
     };
     thread_pool.push_back(std::thread(func));
@@ -270,7 +276,7 @@ TfLiteStatus ImagenetModelEvaluator::EvaluateModel() const {
     thread.join();
   }
 
-  return kTfLiteOk;
+  return all_okay ? kTfLiteOk : kTfLiteError;
 }
 
 }  // namespace metrics

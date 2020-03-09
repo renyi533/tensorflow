@@ -25,6 +25,8 @@ import numpy as np
 import six
 
 from tensorflow.python import keras
+from tensorflow.python.keras import keras_parameterized
+from tensorflow.python.keras import testing_utils
 from tensorflow.python.keras.utils import io_utils
 from tensorflow.python.platform import test
 
@@ -47,8 +49,9 @@ def create_dataset(h5_path='test.h5'):
   f.close()
 
 
-class TestIOUtils(test.TestCase):
+class TestIOUtils(keras_parameterized.TestCase):
 
+  @keras_parameterized.run_all_keras_modes
   def test_HDF5Matrix(self):
     if h5py is None:
       return
@@ -80,17 +83,19 @@ class TestIOUtils(test.TestCase):
     model = keras.models.Sequential()
     model.add(keras.layers.Dense(64, input_shape=(10,), activation='relu'))
     model.add(keras.layers.Dense(1, activation='sigmoid'))
-    model.compile(loss='binary_crossentropy', optimizer='sgd')
+    model.compile(
+        loss='binary_crossentropy',
+        optimizer='sgd',
+        run_eagerly=testing_utils.should_run_eagerly())
 
     # Note: you have to use shuffle='batch' or False with HDF5Matrix
     model.fit(x_train, y_train, batch_size=32, shuffle='batch', verbose=False)
-    # test that evalutation and prediction
+    # test that evaluation and prediction
     # don't crash and return reasonable results
     out_pred = model.predict(x_test, batch_size=32, verbose=False)
     out_eval = model.evaluate(x_test, y_test, batch_size=32, verbose=False)
 
     self.assertEqual(out_pred.shape, (50, 1))
-    self.assertEqual(out_eval.shape, ())
     self.assertGreater(out_eval, 0)
 
     # test slicing for shortened array

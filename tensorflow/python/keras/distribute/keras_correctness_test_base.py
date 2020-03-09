@@ -18,6 +18,7 @@ from __future__ import division
 from __future__ import print_function
 
 import functools
+
 from absl.testing import parameterized
 import numpy as np
 import six
@@ -29,9 +30,11 @@ from tensorflow.python.distribute import mirrored_strategy
 from tensorflow.python.distribute import strategy_combinations
 from tensorflow.python.distribute import tpu_strategy
 from tensorflow.python.eager import context
-from tensorflow.python.eager import test
 from tensorflow.python.framework import random_seed
 from tensorflow.python.keras.distribute import distributed_training_utils
+from tensorflow.python.keras.mixed_precision.experimental import policy
+from tensorflow.python.keras.preprocessing import sequence
+from tensorflow.python.platform import test
 from tensorflow.python.util import nest
 
 _RANDOM_SEED = 1337
@@ -57,15 +60,14 @@ def eager_mode_test_configuration():
 
 
 def graph_mode_test_configuration():
-  return combinations.combine(mode='graph',
-                              use_numpy=[True, False],
-                              use_validation_data=[True, False])
+  return combinations.combine(
+      mode='graph', use_numpy=[True, False], use_validation_data=[True, False])
 
 
 def all_strategy_and_input_config_combinations():
   return (combinations.times(
       combinations.combine(
-          distribution=all_strategies, cloning=[True, False]),
+          distribution=all_strategies),
       eager_mode_test_configuration() + graph_mode_test_configuration()))
 
 
@@ -91,19 +93,17 @@ def strategies_for_embedding_models():
 
 def test_combinations_for_embedding_model():
   # TODO(sourabhbajaj): Enable tests for eager mode
-  eager_mode_strategies = [s for s in strategies_for_embedding_models()
-                           if not s.required_tpu]
+  eager_mode_strategies = [
+      s for s in strategies_for_embedding_models() if not s.required_tpu
+  ]
 
   return (combinations.times(
       combinations.combine(
-          distribution=strategies_for_embedding_models(),
-          cloning=[True, False]),
-      (graph_mode_test_configuration())) +
-          combinations.times(
-              combinations.combine(
-                  distribution=eager_mode_strategies,
-                  cloning=[False]),
-              (eager_mode_test_configuration())))
+          distribution=strategies_for_embedding_models()),
+      (graph_mode_test_configuration())) + combinations.times(
+          combinations.combine(
+              distribution=eager_mode_strategies),
+          (eager_mode_test_configuration())))
 
 
 def test_combinations_with_tpu_strategies():
@@ -112,10 +112,9 @@ def test_combinations_with_tpu_strategies():
       strategy_combinations.tpu_strategy_one_step
   ]
 
-  return (
-      combinations.times(
-          combinations.combine(distribution=tpu_strategies),
-          graph_mode_test_configuration()))
+  return (combinations.times(
+      combinations.combine(distribution=tpu_strategies),
+      graph_mode_test_configuration()))
 
 
 class MaybeDistributionScope(object):
@@ -173,15 +172,9 @@ def get_shapes(data):
   return shapes
 
 
-def get_correctness_test_inputs(use_numpy,
-                                use_validation_data,
-                                with_distribution,
-                                x_train,
-                                y_train,
-                                x_eval,
-                                y_eval,
-                                x_predict,
-                                training_epochs):
+def get_correctness_test_inputs(use_numpy, use_validation_data,
+                                with_distribution, x_train, y_train, x_eval,
+                                y_eval, x_predict, training_epochs):
   """Generates the inputs for correctness check when enable Keras with DS."""
   global_batch_size = _GLOBAL_BATCH_SIZE
   batch_size = get_batch_size(global_batch_size, with_distribution)
@@ -204,9 +197,7 @@ def get_correctness_test_inputs(use_numpy,
           'x': x_eval,
           'y': y_eval,
       }
-    predict_inputs = {
-        'x': x_predict
-    }
+    predict_inputs = {'x': x_predict}
   else:
     training_data_size = get_data_size(x_train)
     # For dataset inputs, we do not pass batch_size to
@@ -240,8 +231,8 @@ def get_correctness_test_inputs(use_numpy,
           'steps': eval_steps,
       }
 
-    predict_batch_size = get_batch_size(get_data_size(x_predict),
-                                        with_distribution)
+    predict_batch_size = get_batch_size(
+        get_data_size(x_predict), with_distribution)
     predict_dataset = dataset_ops.Dataset.from_tensor_slices(x_predict)
     predict_dataset = batch_wrapper(predict_dataset, predict_batch_size)
     predict_inputs = {
@@ -255,13 +246,11 @@ def get_correctness_test_inputs(use_numpy,
 def fit_eval_and_predict(initial_weights,
                          input_fn,
                          model_fn,
-                         cloning=None,
                          distribution=None,
                          is_stateful_model=False):
   """Generates results for fit/predict/evaluate for given model."""
   training_inputs, eval_inputs, predict_inputs = input_fn()
   model = model_fn(
-      cloning=cloning,
       initial_weights=initial_weights,
       distribution=distribution,
       input_shapes=get_shapes(training_inputs['x']))
@@ -303,8 +292,11 @@ def compare_results(results_with_ds,
                     testcase,
                     partial_last_batch=None):
   """Compares results of model compiled with/without distribution strategy."""
-  if partial_last_batch == 'train_and_eval':
-    # We relax the tolerence a lot in the partial last batch case as
+  if policy.global_policy().compute_dtype in ('float16', 'bfloat16'):
+    default_tolerance = 1e-2
+    relaxed_tolerance = 1e-2
+  elif partial_last_batch == 'train_and_eval':
+    # We relax the tolerance a lot in the partial last batch case as
     #   1. the examples in uneven batches may have different weights when
     #      applying the gradients in the distributed case.
     #   2. TF Keras and TF Keras DS have different ways to handle the case when
@@ -323,9 +315,9 @@ def compare_results(results_with_ds,
     """Returns tolerance to compare results."""
     # TODO(b/119257215): For MirroredStrategy, weights are not exactly the same,
     # so use larger tolerance for now. Predict should be related to weights.
-    if (isinstance(distribution, (
-        mirrored_strategy.MirroredStrategy,
-        distribute_lib._DefaultDistributionStrategy)) and  # pylint: disable=protected-access
+    if (isinstance(distribution,
+                   (mirrored_strategy.MirroredStrategy,
+                    distribute_lib._DefaultDistributionStrategy)) and  # pylint: disable=protected-access
         key.startswith(('weights_1', 'weights_2', 'predict_result'))):
       return relaxed_tolerance
 
@@ -333,8 +325,8 @@ def compare_results(results_with_ds,
 
   for key in sorted(results_with_ds.keys()):
     if (key.startswith('training_history') and
-        isinstance(distribution, (tpu_strategy.TPUStrategy,
-                                  tpu_strategy.TPUStrategyV1)) and
+        isinstance(distribution,
+                   (tpu_strategy.TPUStrategy, tpu_strategy.TPUStrategyV1)) and
         distribution.extended.steps_per_run > 1):
       # TODO(b/119894254): Enable this test for all cases once the
       # underlying bug is fixed.
@@ -363,8 +355,8 @@ def compare_results(results_with_ds,
 
 def should_skip_tpu_with_eager(distribution):
   return (context.executing_eagerly() and
-          isinstance(distribution, (tpu_strategy.TPUStrategy,
-                                    tpu_strategy.TPUStrategyV1)))
+          isinstance(distribution,
+                     (tpu_strategy.TPUStrategy, tpu_strategy.TPUStrategyV1)))
 
 
 class LearningRateBatchScheduler(keras.callbacks.Callback):
@@ -386,9 +378,10 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
                                               parameterized.TestCase):
   """Model agnostic testing infra to test correctness of Keras models."""
 
-  def set_up_test_config(self, use_numpy=False,
+  def set_up_test_config(self,
+                         use_numpy=False,
                          use_validation_data=False,
-                         with_batch_norm=False):
+                         with_batch_norm=None):
     self.use_numpy = use_numpy
     self.use_validation_data = use_validation_data
     self.with_batch_norm = with_batch_norm
@@ -420,32 +413,27 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
       **kwargs: key word arguments about how to create the input dictionaries
 
     Returns:
-      Three dictionaries representing the input for fit(), evalutate() and
+      Three dictionaries representing the input for fit(), evaluate() and
       predict()
     """
 
     return get_correctness_test_inputs(**kwargs)
 
-  def get_model(self, distribution=None, cloning=None, input_shapes=None):
+  def get_model(self,
+                distribution=None,
+                input_shapes=None):
     raise NotImplementedError
-
-  def skip_unsupported_test_configuration(self, distribution, cloning):
-    if should_skip_tpu_with_eager(distribution) and cloning:
-      self.skipTest('TPUStrategy does not support eager mode with cloning.')
-    return
 
   def run_correctness_test(self,
                            distribution,
                            use_numpy,
                            use_validation_data,
-                           cloning=None,
-                           with_batch_norm=False,
+                           with_batch_norm=None,
                            is_stateful_model=False,
                            partial_last_batch=None,
                            training_epochs=2):
     with self.cached_session():
       self.set_up_test_config(use_numpy, use_validation_data, with_batch_norm)
-      self.skip_unsupported_test_configuration(distribution, cloning)
 
       if partial_last_batch == 'eval':
         x_train, y_train, x_eval, y_eval, x_predict = (
@@ -461,7 +449,8 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
       # The model is built once and the initial weights are saved.
       # This is used to initialize the model for both the distribution and
       # non-distribution run.
-      model = self.get_model(cloning=cloning, input_shapes=get_shapes(x_train))
+      model = self.get_model(
+          input_shapes=get_shapes(x_train))
       initial_weights = model.get_weights()
 
       ds_input_fn = functools.partial(
@@ -492,21 +481,20 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
           initial_weights,
           input_fn=ds_input_fn,
           model_fn=self.get_model,
-          cloning=cloning,
           distribution=distribution,
           is_stateful_model=is_stateful_model)
       results_without_ds = fit_eval_and_predict(
           initial_weights,
           input_fn=nods_input_fn,
           model_fn=self.get_model,
-          cloning=cloning,
           distribution=None,
           is_stateful_model=is_stateful_model)
 
       # First, special case, for multi-replica distributed training, batch
       # norm is not aggregated globally. So it is expected to have different
       # weights.
-      if (self.with_batch_norm and distribution.num_replicas_in_sync > 1):
+      if (self.with_batch_norm == 'regular' and
+          distribution.num_replicas_in_sync > 1):
         with self.assertRaises(AssertionError):
           compare_results(
               results_with_ds,
@@ -532,20 +520,21 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
       **kwargs: key word arguments about how to create the input dictionaries
 
     Returns:
-      Three dictionaries representing the input for fit(), evalutate() and
+      Three dictionaries representing the input for fit(), evaluate() and
       predict()
     """
 
     training_input = kwargs
     return training_input, None, None
 
-  def run_dynamic_lr_test(self, distribution, cloning=None):
+  def run_dynamic_lr_test(self,
+                          distribution):
     with self.cached_session():
       self.set_up_test_config()
-      self.skip_unsupported_test_configuration(distribution, cloning)
 
       x_train, y_train, _ = self.get_data()
-      model = self.get_model(cloning=cloning, input_shapes=get_shapes(x_train))
+      model = self.get_model(
+          input_shapes=get_shapes(x_train))
       initial_weights = model.get_weights()
       update_freq = None
 
@@ -586,16 +575,14 @@ class TestDistributionStrategyCorrectnessBase(test.TestCase,
           initial_weights,
           input_fn=ds_input_fn,
           model_fn=self.get_model,
-          cloning=cloning,
           distribution=distribution)
       results_without_ds = fit_eval_and_predict(
           initial_weights,
           input_fn=nods_input_fn,
           model_fn=self.get_model,
-          cloning=cloning,
           distribution=None)
-      compare_results(results_with_ds, results_without_ds, distribution,
-                      testcase=self)
+      compare_results(
+          results_with_ds, results_without_ds, distribution, testcase=self)
 
 
 class TestDistributionStrategyEmbeddingModelCorrectnessBase(
@@ -625,7 +612,7 @@ class TestDistributionStrategyEmbeddingModelCorrectnessBase(
       labels.append(label)
       features.append(word_ids)
 
-    features = keras.preprocessing.sequence.pad_sequences(
+    features = sequence.pad_sequences(
         features, maxlen=max_words)
     x_train = np.asarray(features, dtype=np.float32)
     y_train = np.asarray(labels, dtype=np.int32).reshape((count, 1))

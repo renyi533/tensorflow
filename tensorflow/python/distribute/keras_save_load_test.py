@@ -33,8 +33,11 @@ class KerasSaveLoadTest(test_base.TestSavedModelBase):
   def _save_model(self, model, saved_dir):
     model.save(saved_dir, save_format='tf')
 
-  def _load_and_run_model(self, distribution, saved_dir, predict_dataset,
-                          output_name):
+  def _load_and_run_model(self,
+                          distribution,
+                          saved_dir,
+                          predict_dataset,
+                          output_name='output_1'):
     restored_keras_model = save.load_model(saved_dir)
     return restored_keras_model.predict(
         predict_dataset, steps=test_base.PREDICT_STEPS)
@@ -42,19 +45,16 @@ class KerasSaveLoadTest(test_base.TestSavedModelBase):
   @combinations.generate(test_base.simple_models_with_strategies())
   def test_save_no_strategy_restore_strategy(self, model_and_input,
                                              distribution):
-    self.run_test_save_no_strategy_restore_strategy(model_and_input,
-                                                    distribution)
+    self.run_test_save_no_strategy_restore_strategy(
+        model_and_input, distribution)
 
   @combinations.generate(
       combinations.times(test_base.simple_models_with_strategies(),
                          combinations.combine(save_in_scope=[True, False])))
   def test_save_strategy_restore_no_strategy(self, model_and_input,
                                              distribution, save_in_scope):
-    if save_in_scope:
-      self.skipTest(('b/134703272 - Saving model in tf.distribute.Strategy ',
-                     'scope is not supported.'))
-    self.run_test_save_strategy_restore_no_strategy(model_and_input,
-                                                    distribution, save_in_scope)
+    self.run_test_save_strategy_restore_no_strategy(
+        model_and_input, distribution, save_in_scope)
 
   @combinations.generate(
       combinations.times(test_base.simple_models_with_strategy_pairs(),
@@ -63,13 +63,11 @@ class KerasSaveLoadTest(test_base.TestSavedModelBase):
                                           distribution_for_saving,
                                           distribution_for_restoring,
                                           save_in_scope):
-    if save_in_scope:
-      self.skipTest(('b/134703272 - Saving model in tf.distribute.Strategy ',
-                     'scope is not supported.'))
     self.run_test_save_strategy_restore_strategy(model_and_input,
                                                  distribution_for_saving,
                                                  distribution_for_restoring,
                                                  save_in_scope)
+
 
 if __name__ == '__main__':
   test.main()
